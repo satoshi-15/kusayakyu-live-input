@@ -127,6 +127,7 @@ declare
   v_out_runner_id bigint;
   v_out_batter_id text;
   v_is_new boolean;
+  v_out_seq int := 0;
 begin
   perform _check_access(p_game_id, p_access_token);
 
@@ -166,6 +167,10 @@ begin
   -- この打席と同一プレーでアウトになった既存走者を、走塁死イベントと同じ形でlive_eventsに記録する
   -- (例: 三塁走者がホームで刺されたフィルダースチョイス)。既存の「走塁死」クイックイベントと
   -- 同じtype='runner_out_advancing'を使うことで、アウトカウント・走者一覧の除去ロジックを共用する。
+  -- created_atは明示的にv_row.created_atより後の時刻を指定する: 同一トランザクション内では
+  -- now()がトランザクション開始時刻を返すため、何も指定しないとこの打席の行と全く同じ
+  -- created_atになってしまい、import_from_supabase.pyのafter_seq算出(created_at基準の前後判定)が
+  -- この打席をイベントより「後」と誤認識してしまう(該当プレー自体が無視される形になるバグ)。
   if v_is_new and array_length(p_out_runner_ids, 1) > 0 then
     foreach v_out_runner_id in array p_out_runner_ids
     loop
@@ -173,11 +178,13 @@ begin
       where game_id = p_game_id and id = v_out_runner_id and deleted_at is null;
 
       if v_out_batter_id is not null then
+        v_out_seq := v_out_seq + 1;
         insert into live_events (
-          game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by
+          game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by, created_at
         ) values (
           p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_out_advancing',
-          v_out_batter_id, null, null, p_entered_by
+          v_out_batter_id, null, null, p_entered_by,
+          v_row.created_at + (v_out_seq * interval '1 millisecond')
         );
       end if;
     end loop;
