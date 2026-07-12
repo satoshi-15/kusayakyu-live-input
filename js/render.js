@@ -54,6 +54,20 @@ export function renderPointer(elm, pointer, playersById, score) {
   elm.appendChild(sub);
 }
 
+const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
+
+// 自チーム攻撃中の走者一覧を軽量表示する(進塁は盗塁のみ反映する簡易版のため、参考程度)。
+export function renderRunners(elm, runners) {
+  clear(elm);
+  if (!runners.length) return;
+  const line = document.createElement('div');
+  line.className = 'runners-line';
+  line.textContent = 'ランナー: ' + runners
+    .map((r) => `${BASE_LABELS[r.base] || r.base}${r.name}`)
+    .join(' / ');
+  elm.appendChild(line);
+}
+
 export function renderRecentList(elm, atbats, events, playersById, handlers) {
   clear(elm);
   const alive = aliveAtbats(atbats).slice(-10).reverse();

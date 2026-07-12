@@ -1,7 +1,9 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
-import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore } from './derive.js';
-import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge } from './render.js';
+import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase } from './derive.js';
+
+const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
+import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderRunners } from './render.js';
 import { RESULT_OPTIONS, findResultOption } from './result-options.js';
 
 function parseHash() {
@@ -18,11 +20,14 @@ const els = {
   gameInfo: document.getElementById('game-info'),
   connectionStatus: document.getElementById('connection-status'),
   pointerBox: document.getElementById('pointer-box'),
+  runnersBox: document.getElementById('runners-box'),
   offenseFields: document.getElementById('offense-fields'),
   defenseFields: document.getElementById('defense-fields'),
   batterSelect: document.getElementById('batter-select'),
   batterOtherLabel: document.getElementById('batter-other-label'),
   batterOtherInput: document.getElementById('batter-other-input'),
+  runnersScoredBox: document.getElementById('runners-scored-box'),
+  runnersScoredList: document.getElementById('runners-scored-list'),
   pitcherSelect: document.getElementById('pitcher-select'),
   opponentBatterName: document.getElementById('opponent-batter-name'),
   resultSelect: document.getElementById('result-select'),
@@ -81,6 +86,30 @@ function confirmModal(message) {
   });
 }
 
+// 塁に出ている自チーム走者が複数いる場合、選手ID手入力の代わりにドロップダウンで選ばせる。
+function selectRunnerModal(runners) {
+  return new Promise((resolve) => {
+    els.modalMessage.textContent = '走者を選択してください';
+    const select = document.createElement('select');
+    for (const r of runners) {
+      const name = state.playersById.get(r.batterId)?.display_name || r.batterId;
+      const opt = document.createElement('option');
+      opt.value = r.batterId;
+      opt.textContent = `${r.orderNo ?? ''}番 ${name}(${BASE_LABELS[r.base] || ''})`;
+      select.appendChild(opt);
+    }
+    els.modalMessage.appendChild(select);
+    els.modalOverlay.classList.remove('hidden');
+    const cleanup = (value) => {
+      els.modalOverlay.classList.add('hidden');
+      select.remove();
+      resolve(value);
+    };
+    els.modalConfirm.onclick = () => cleanup(select.value);
+    els.modalCancel.onclick = () => cleanup(null);
+  });
+}
+
 function populateSelects() {
   const lineup = state.game.lineup || [];
   els.batterSelect.innerHTML = lineup
@@ -97,13 +126,31 @@ function populateSelects() {
     groups.get(opt.group).push(opt);
   }
   els.resultSelect.innerHTML = [...groups.entries()]
-    .map(([group, opts]) => `<optgroup label="${group}">${opts.map((o) => `<option value="${o.label}">${o.label}</option>`).join('')}</optgroup>`)
+    .map(([group, opts]) => `<optgroup label="${group}">${opts.map((o) => `<option value="${o.label}">${o.shortLabel || o.label}</option>`).join('')}</optgroup>`)
     .join('');
 }
 
 els.batterSelect.addEventListener('change', () => {
   els.batterOtherLabel.classList.toggle('hidden', els.batterSelect.value !== '__other__');
+  renderRunnersScoredCheckboxes();
 });
+
+// 現在の打者以外に、この打席中に生還した可能性のある走者一覧をチェックボックスで出す
+// (例: A選手のヒットで既に塁に出ていたB選手がホームインした場合、両方を同時に記録できるようにする)。
+function renderRunnersScoredCheckboxes() {
+  if (!currentPointer || currentPointer.side !== 'offense') {
+    els.runnersScoredBox.classList.add('hidden');
+    return;
+  }
+  const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
+    .filter((r) => r.batterId !== els.batterSelect.value);
+  els.runnersScoredBox.classList.toggle('hidden', runners.length === 0);
+  els.runnersScoredList.innerHTML = runners.map((r) => {
+    const name = state.playersById.get(r.batterId)?.display_name || r.batterId;
+    const baseLabel = BASE_LABELS[r.base] || '';
+    return `<label><input type="checkbox" class="runner-scored-checkbox" value="${r.atbatId}" style="display:inline-block;width:auto;" /> ${r.orderNo ?? ''}番 ${name}(${baseLabel})</label>`;
+  }).join('');
+}
 
 function updateSubmitDisabled() {
   if (!currentPointer || currentPointer.side !== 'defense') {
@@ -127,6 +174,9 @@ function updatePointerAndForm() {
   els.pointerBox.classList.add('highlight');
   setTimeout(() => els.pointerBox.classList.remove('highlight'), 400);
   renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats));
+  const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
+    .map((r) => ({ ...r, name: state.playersById.get(r.batterId)?.display_name || r.batterId }));
+  renderRunners(els.runnersBox, runners);
   renderTrackPitchingToggle();
 
   if (state.game.status !== 'open') {
@@ -151,6 +201,7 @@ function updatePointerAndForm() {
   if (!isOffense && currentPointer.currentPitcherId) {
     els.pitcherSelect.value = currentPointer.currentPitcherId;
   }
+  renderRunnersScoredCheckboxes();
   updateSubmitDisabled();
 }
 
@@ -228,9 +279,18 @@ for (const btn of els.quickEventButtons) {
     if (needsPitcher && !pitcherId) { alert('投手を選択してください'); return; }
     let runnerId = null;
     if (needsRunner) {
-      const guess = els.batterSelect.value !== '__other__' ? els.batterSelect.value : '';
-      runnerId = prompt('走者(players.jsonのid)を入力してください', guess);
-      if (!runnerId) return;
+      const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+      if (runners.length === 1) {
+        runnerId = runners[0].batterId;
+      } else if (runners.length > 1) {
+        runnerId = await selectRunnerModal(runners);
+        if (!runnerId) return;
+      } else {
+        // 相手の攻撃中など、走者一覧を追跡していない場合は手入力にフォールバックする
+        const guess = els.batterSelect.value !== '__other__' ? els.batterSelect.value : '';
+        runnerId = prompt('走者(players.jsonのid)を入力してください', guess);
+        if (!runnerId) return;
+      }
     }
     try {
       await api.submitEvent(gameId, accessToken, {
@@ -320,6 +380,8 @@ els.form.addEventListener('submit', async (ev) => {
     pitcherId: isOffense ? null : els.pitcherSelect.value,
     opponentBatterName: isOffense ? null : (els.opponentBatterName.value.trim() || null),
     enteredBy,
+    scoredRunnerIds: [...els.runnersScoredList.querySelectorAll('.runner-scored-checkbox:checked')]
+      .map((el) => Number(el.value)),
   };
 
   withDoubleTapGuard([els.submitBtn], (release) => {

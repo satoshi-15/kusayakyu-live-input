@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>草野球ライブ入力</title>
 <link rel="stylesheet" href="./css/style.css" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="apple-touch-icon" href="./icons/icon-192.png" />
+<link rel="icon" href="./icons/icon-192.png" />
+<meta name="theme-color" content="#1a6b3c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="草野球入力" />
 </head>
 <body>
 <main class="container">
@@ -20,6 +26,7 @@
   </label>
 
   <div id="pointer-box"></div>
+  <div id="runners-box"></div>
 
   <div class="quick-events">
     <button type="button" class="btn-secondary" data-event="stolen_base">盗塁</button>
@@ -44,6 +51,10 @@
       <label id="batter-other-label" class="hidden">打者(自由入力、players.jsonのid。例: minamihara)
         <input type="text" id="batter-other-input" />
       </label>
+      <div id="runners-scored-box" class="hidden">
+        <p class="field-hint">この打席で生還した他の走者(複数選択可)</p>
+        <div id="runners-scored-list"></div>
+      </div>
     </div>
     <div id="defense-fields" class="hidden">
       <label>投手(交代した場合はここで変更)

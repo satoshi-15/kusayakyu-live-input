@@ -61,6 +61,7 @@ export async function submitAtbat(gameId, accessToken, payload) {
     p_pitcher_id: payload.pitcherId,
     p_opponent_batter_name: payload.opponentBatterName,
     p_entered_by: payload.enteredBy,
+    p_scored_runner_ids: payload.scoredRunnerIds || [],
   });
   if (error) throw error;
   return data;

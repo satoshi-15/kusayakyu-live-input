@@ -88,6 +88,11 @@ $$;
 grant execute on function set_track_pitching(text, uuid, boolean) to anon, authenticated;
 
 
+-- 既存DBに古い17引数版(生還ランナー一括マーク追加前)が残っている場合に備えて明示的に削除する。
+drop function if exists submit_atbat(
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text
+);
+
 create or replace function submit_atbat(
   p_game_id text,
   p_access_token uuid,
@@ -105,7 +110,8 @@ create or replace function submit_atbat(
   p_detail text,
   p_pitcher_id text,
   p_opponent_batter_name text,
-  p_entered_by text
+  p_entered_by text,
+  p_scored_runner_ids bigint[] default '{}'
 )
 returns live_atbats
 language plpgsql
@@ -141,12 +147,19 @@ begin
     select * into v_row from live_atbats where game_id = p_game_id and client_uuid = p_client_uuid;
   end if;
 
+  -- 同じ打席の中で生還した既存走者(1人以上)を一括でscored済みにする
+  -- (例: A選手のヒットでB選手がホームインした場合、B選手の元の打席行をここで更新する)。
+  if array_length(p_scored_runner_ids, 1) > 0 then
+    update live_atbats set scored = true
+    where game_id = p_game_id and id = any(p_scored_runner_ids) and deleted_at is null;
+  end if;
+
   return v_row;
 end;
 $$;
 
 grant execute on function submit_atbat(
-  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[]
 ) to anon, authenticated;
 
 

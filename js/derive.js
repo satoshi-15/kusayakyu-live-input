@@ -93,6 +93,44 @@ export function derivePointer(game, atbats, events) {
   };
 }
 
+// 出塁した結果ごとの推定初期塁(進塁は追跡しない簡易版。盗塁のみ反映する)。
+const BASE_ON_HIT = {
+  single: 'first', walk: 'first', hbp: 'first', reached_on_error: 'first', fielders_choice: 'first',
+  double: 'second', triple: 'third',
+};
+const NEXT_BASE = { first: 'second', second: 'third' };
+
+// 現在の半イニングで塁に出ていて、まだ生還・アウトになっていない自チームの走者一覧を返す。
+// 相手の攻撃中(相手選手個別を追跡していないため)は常に空配列を返す。
+// 進塁(単打で1塁走者が3塁まで等)は追跡せず、盗塁による進塁のみ反映する簡易版。
+export function deriveRunnersOnBase(game, atbats, events) {
+  const { inning, half } = deriveInningState(atbats, events);
+  if (half !== game.our_half) return [];
+
+  const onBase = new Map(); // batterId -> {atbatId, batterId, orderNo, base}
+  for (const a of aliveAtbats(atbats)) {
+    if (a.inning !== inning || a.half !== half) continue;
+    if (a.batter_id === 'opponent' || a.scored) continue;
+    const base = BASE_ON_HIT[a.result];
+    if (!base) continue;
+    onBase.set(a.batter_id, { atbatId: a.id, batterId: a.batter_id, orderNo: a.order_no, base });
+  }
+
+  for (const item of mergeTimeline(atbats, events)) {
+    if (item.kind !== 'event') continue;
+    const e = item.ref;
+    if (e.inning !== inning || e.half !== half) continue;
+    if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing') {
+      onBase.delete(e.runner_id);
+    } else if (e.type === 'stolen_base') {
+      const r = onBase.get(e.runner_id);
+      if (r && NEXT_BASE[r.base]) r.base = NEXT_BASE[r.base];
+    }
+  }
+
+  return [...onBase.values()];
+}
+
 // 現在のスコア(自チーム・相手それぞれの生還数)を集計する。
 // 投手成績OFF中も相手の得点だけは把握できるようにするための軽量表示用(公式記録への登録は別途手動)。
 export function deriveScore(atbats) {
