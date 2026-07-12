@@ -132,6 +132,7 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; 
 .modal-box {
   background: var(--bg); color: var(--fg); border-radius: 12px; padding: 20px;
   max-width: 90%; width: 360px;
+  max-height: 80vh; overflow-y: auto;
 }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; }
 .modal-actions button { flex: 1; }

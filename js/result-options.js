@@ -47,6 +47,7 @@ function build() {
 
   options.push({ label: '本塁打', result: 'home_run', hitType: 'home_run', detail: '本塁打', group: 'その他' });
   options.push({ label: '三振', result: 'strikeout', detail: null, group: 'その他' });
+  options.push({ label: '振り逃げ(出塁)', shortLabel: '振り逃げ', result: 'strikeout_reached', detail: '振り逃げ', group: 'その他' });
   options.push({ label: '四球', result: 'walk', detail: null, group: 'その他' });
   options.push({ label: '死球', result: 'hbp', detail: null, group: 'その他' });
   options.push({ label: '犠打', result: 'sac_bunt', detail: null, group: 'その他' });

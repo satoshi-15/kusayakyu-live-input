@@ -12,7 +12,7 @@ export const OUT_EVENT_TYPES = new Set(['caught_stealing', 'runner_out_advancing
 // scripts/aggregate.py の AB_RESULTS と同じ(rules/集計ルール.md ルール2)。
 export const AB_RESULTS = new Set([
   'groundout', 'flyout', 'strikeout', 'single', 'double', 'triple', 'home_run',
-  'fielders_choice', 'reached_on_error',
+  'fielders_choice', 'reached_on_error', 'strikeout_reached',
 ]);
 
 export function isAtBat(result) {
@@ -100,6 +100,7 @@ export function derivePointer(game, atbats, events) {
 // 出塁した結果ごとの初期塁。以降の進塁は盗塁イベント・runner_advanceイベントで明示的に反映する。
 const BASE_ON_HIT = {
   single: 'first', walk: 'first', hbp: 'first', reached_on_error: 'first', fielders_choice: 'first',
+  strikeout_reached: 'first',
   double: 'second', triple: 'third',
 };
 const NEXT_BASE = { first: 'second', second: 'third' };
@@ -134,8 +135,13 @@ export function deriveRunnersOnBase(game, atbats, events) {
       const r = onBase.get(e.runner_atbat_id);
       if (r && NEXT_BASE[r.base]) r.base = NEXT_BASE[r.base];
     } else if (e.type === 'runner_advance') {
-      const r = onBase.get(e.runner_atbat_id);
-      if (r && e.to_base) r.base = e.to_base;
+      // to_base='home'は生還(暴投・ボーク等、打席を介さない生還)を表す。塁ではないのでonBaseから除く。
+      if (e.to_base === 'home') {
+        onBase.delete(e.runner_atbat_id);
+      } else {
+        const r = onBase.get(e.runner_atbat_id);
+        if (r && e.to_base) r.base = e.to_base;
+      }
     }
   }
 

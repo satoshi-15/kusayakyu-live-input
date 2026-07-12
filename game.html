@@ -46,6 +46,7 @@
     <button type="button" class="btn-secondary" data-event="runner_out_advancing">走塁死</button>
     <button type="button" class="btn-secondary pitching-only" data-event="wild_pitch">暴投</button>
     <button type="button" class="btn-secondary pitching-only" data-event="balk">ボーク</button>
+    <button type="button" class="btn-secondary pitching-only" data-event="passed_ball">パスボール</button>
   </div>
 
   <div id="defense-simple" class="hidden">
@@ -105,7 +106,7 @@
 
 <div id="modal-overlay" class="modal-overlay hidden">
   <div class="modal-box">
-    <p id="modal-message"></p>
+    <div id="modal-message"></div>
     <div class="modal-actions">
       <button type="button" id="modal-cancel" class="btn-secondary">キャンセル</button>
       <button type="button" id="modal-confirm" class="btn-danger">実行</button>

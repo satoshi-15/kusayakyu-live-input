@@ -8,6 +8,13 @@ import { addLineupRow, collectLineup } from './lineup-editor.js';
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
 // 走者の現在の塁から見て、まだ進める先の塁一覧(生還は別選択肢のため含まない)。
 const ADVANCE_TARGETS = { first: ['second', 'third'], second: ['third'], third: [] };
+// 暴投・ボーク・パスボールで走者が進む1つ先の塁(三塁走者は生還=home)。
+const IMMEDIATE_NEXT = { first: 'second', second: 'third', third: 'home' };
+
+// innerHTMLへ差し込む文字列をエスケープする(相手打者名・相手投手名は自由入力のためXSS対策必須)。
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 function parseHash() {
   const hash = window.location.hash.replace(/^#/, '');
@@ -122,6 +129,67 @@ function selectRunnerModal(runners) {
   });
 }
 
+// ボークは走者全員が確定で1つ先の塁(三塁走者は生還)へ進むルールのため、個別選択はさせず確認だけ取る。
+// runnersが空ならそもそも確認不要([]を返す。投手成績としてのボーク自体は記録する)。
+// キャンセル時はnullを返し、呼び出し側で送信全体を中止する。
+async function confirmForcedAdvance(runners) {
+  if (runners.length === 0) return [];
+  const summary = runners
+    .map((r) => {
+      const to = IMMEDIATE_NEXT[r.base];
+      const toText = to === 'home' ? '生還' : `${BASE_LABELS[to]}へ進塁`;
+      return `${r.orderNo ?? ''}番 ${runnerDisplayName(r)}(${BASE_LABELS[r.base]}) → ${toText}`;
+    })
+    .join(' / ');
+  const ok = await confirmModal(`走者は全員1つ先の塁へ進むものとして記録します。よろしいですか? ${summary}`);
+  if (!ok) return null;
+  return runners.map((r) => ({
+    atbatId: r.atbatId,
+    toBase: IMMEDIATE_NEXT[r.base],
+    runnerId: r.batterId === 'opponent' ? (r.opponentBatterName || null) : r.batterId,
+  }));
+}
+
+// 暴投・パスボールは走者ごとに結果が分かれうる(例: 1・3塁で暴投→1塁走者だけ進塁、3塁走者はそのまま)。
+// そのため走者ごとに「そのまま/進塁」を選ばせる(デフォルトは進塁)。runnersが空なら呼ばない前提。
+// キャンセル時はnull、走者全員「そのまま」を選んだ場合も呼び出し側で「進塁なし=何も記録しない」と扱う。
+function selectAdvanceModal(runners) {
+  return new Promise((resolve) => {
+    const rowsHtml = runners.map((r) => {
+      const to = IMMEDIATE_NEXT[r.base];
+      const toText = to === 'home' ? '生還' : `${BASE_LABELS[to]}へ進塁`;
+      const name = escapeHtml(runnerDisplayName(r));
+      const groupName = `advmodal-${r.atbatId}`;
+      return `
+        <div class="runner-row">
+          <span>${r.orderNo ?? ''}番 ${name}(${BASE_LABELS[r.base]})</span>
+          <label><input type="radio" name="${groupName}" value="none" style="display:inline-block;width:auto;" /> そのまま</label>
+          <label><input type="radio" name="${groupName}" value="advance" checked style="display:inline-block;width:auto;" /> ${toText}</label>
+        </div>`;
+    }).join('');
+    els.modalMessage.innerHTML = '<p class="field-hint">進塁した走者を選択してください</p>' + rowsHtml;
+    els.modalOverlay.classList.remove('hidden');
+    const cleanup = (apply) => {
+      els.modalOverlay.classList.add('hidden');
+      if (!apply) { resolve(null); return; }
+      const moves = [];
+      for (const r of runners) {
+        const checked = els.modalMessage.querySelector(`input[name="advmodal-${r.atbatId}"]:checked`);
+        if (checked && checked.value === 'advance') {
+          moves.push({
+            atbatId: r.atbatId,
+            toBase: IMMEDIATE_NEXT[r.base],
+            runnerId: r.batterId === 'opponent' ? (r.opponentBatterName || null) : r.batterId,
+          });
+        }
+      }
+      resolve(moves);
+    };
+    els.modalConfirm.onclick = () => cleanup(true);
+    els.modalCancel.onclick = () => cleanup(false);
+  });
+}
+
 function populateSelects() {
   const lineup = state.game.lineup || [];
   els.batterSelect.innerHTML = lineup
@@ -180,6 +248,24 @@ function runnerDisplayName(r) {
   return r.opponentBatterName || '相手打者';
 }
 
+// 四球・死球の場合、塁が埋まっていて押し出しになる走者の atbatId -> デフォルト選択値 を返す
+// ('advance:second'/'advance:third'/'scored')。最終確定はスコアラーがボタンを押すまで行われない。
+function computeForcedDefaults(result, runners) {
+  const forced = new Map();
+  if (result !== 'walk' && result !== 'hbp') return forced;
+  const occupied = new Set(runners.map((r) => r.base));
+  for (const r of runners) {
+    if (r.base === 'first') {
+      forced.set(r.atbatId, 'advance:second');
+    } else if (r.base === 'second' && occupied.has('first')) {
+      forced.set(r.atbatId, 'advance:third');
+    } else if (r.base === 'third' && occupied.has('first') && occupied.has('second')) {
+      forced.set(r.atbatId, 'scored');
+    }
+  }
+  return forced;
+}
+
 // 現在の打席の打者以外の走者一覧を、走者ごとに「そのまま/進塁(塁ごと)/生還/アウト」で出す
 // (例: A選手のヒットで既に塁に出ていたB選手がホームインした場合、両方を同時に記録できる。
 // アウトを選んだ場合は走塁死と同じ、進塁を選んだ場合は盗塁と同じ仕組みでlive_eventsに記録される)。
@@ -195,19 +281,26 @@ function renderRunnersScoredCheckboxes() {
   if (isOffense) runners = runners.filter((r) => r.batterId !== els.batterSelect.value);
 
   els.runnersScoredBox.classList.toggle('hidden', runners.length === 0);
+  const opt = findResultOption(els.resultSelect.value);
+  const forcedDefaults = computeForcedDefaults(opt?.result, runners);
   els.runnersScoredList.innerHTML = runners.map((r) => {
-    const name = runnerDisplayName(r);
+    const name = escapeHtml(runnerDisplayName(r));
     const baseLabel = BASE_LABELS[r.base] || '';
     const groupName = `runner-${r.atbatId}`;
+    const forcedValue = forcedDefaults.get(r.atbatId);
     const advanceOptions = (ADVANCE_TARGETS[r.base] || [])
-      .map((base) => `<label><input type="radio" name="${groupName}" value="advance:${base}" style="display:inline-block;width:auto;" /> ${BASE_LABELS[base]}へ進塁</label>`)
+      .map((base) => {
+        const value = `advance:${base}`;
+        const checked = forcedValue === value ? 'checked' : '';
+        return `<label><input type="radio" name="${groupName}" value="${value}" ${checked} style="display:inline-block;width:auto;" /> ${BASE_LABELS[base]}へ進塁</label>`;
+      })
       .join('');
     return `
       <div class="runner-row">
         <span>${r.orderNo ?? ''}番 ${name}(${baseLabel})</span>
-        <label><input type="radio" name="${groupName}" value="none" checked style="display:inline-block;width:auto;" /> そのまま</label>
+        <label><input type="radio" name="${groupName}" value="none" ${forcedValue ? '' : 'checked'} style="display:inline-block;width:auto;" /> そのまま</label>
         ${advanceOptions}
-        <label><input type="radio" name="${groupName}" value="scored" style="display:inline-block;width:auto;" /> 生還</label>
+        <label><input type="radio" name="${groupName}" value="scored" ${forcedValue === 'scored' ? 'checked' : ''} style="display:inline-block;width:auto;" /> 生還</label>
         <label><input type="radio" name="${groupName}" value="out" style="display:inline-block;width:auto;" /> アウト</label>
       </div>`;
   }).join('');
@@ -216,7 +309,8 @@ function renderRunnersScoredCheckboxes() {
 
 els.runnersScoredList.addEventListener('change', syncBatterFcState);
 els.batterFcBox.addEventListener('change', syncBatterFcState);
-els.resultSelect.addEventListener('change', syncBatterFcState);
+// 結果が変わるたびに走者一覧を再構築する(四球・死球での強制進塁デフォルトを再計算するため)。
+els.resultSelect.addEventListener('change', renderRunnersScoredCheckboxes);
 
 function updateSubmitDisabled() {
   if (!currentPointer || currentPointer.side !== 'defense') {
@@ -239,9 +333,9 @@ function updatePointerAndForm() {
   currentPointer = derivePointer(state.game, state.atbats, state.events);
   els.pointerBox.classList.add('highlight');
   setTimeout(() => els.pointerBox.classList.remove('highlight'), 400);
-  renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats));
   const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
     .map((r) => ({ ...r, name: runnerDisplayName(r) }));
+  renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats), runners);
   renderRunners(els.runnersBox, runners);
   renderTrackPitchingToggle();
 
@@ -339,12 +433,14 @@ for (const btn of els.quickEventButtons) {
     const enteredBy = els.enteredByInput.value.trim();
     if (!enteredBy) { alert('入力者名を入力してください'); return; }
     const type = btn.dataset.event;
-    const needsPitcher = type === 'wild_pitch' || type === 'balk';
+    const needsPitcher = type === 'wild_pitch' || type === 'balk' || type === 'passed_ball';
     const needsRunner = type === 'stolen_base' || type === 'caught_stealing' || type === 'runner_out_advancing';
+    const needsForcedAdvance = type === 'wild_pitch' || type === 'balk' || type === 'passed_ball';
     const pitcherId = needsPitcher ? (els.pitcherSelect.value || currentPointer?.currentPitcherId) : null;
     if (needsPitcher && !pitcherId) { alert('投手を選択してください'); return; }
     let runnerId = null;
     let runnerAtbatId = null;
+    let advanceMoves = [];
     if (needsRunner) {
       const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
       let picked = null;
@@ -364,6 +460,18 @@ for (const btn of els.quickEventButtons) {
         runnerAtbatId = picked.atbatId;
       }
     }
+    if (needsForcedAdvance) {
+      const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+      if (type === 'balk') {
+        // ボークは走者全員が確定で進塁するため、確認のみ(個別選択なし)。
+        advanceMoves = await confirmForcedAdvance(runners);
+      } else {
+        // 暴投・パスボールは走者ごとに結果が分かれうるため、個別に選択させる。
+        advanceMoves = runners.length === 0 ? [] : await selectAdvanceModal(runners);
+      }
+      if (advanceMoves === null) return; // キャンセル: 何も記録しない
+      if (runners.length > 0 && advanceMoves.length === 0) return; // 進塁した走者が誰もいなければ何も記録しない
+    }
     try {
       await api.submitEvent(gameId, accessToken, {
         clientUuid: crypto.randomUUID(),
@@ -376,6 +484,20 @@ for (const btn of els.quickEventButtons) {
         runnerNote: null,
         enteredBy,
       });
+      for (const move of advanceMoves) {
+        await api.submitEvent(gameId, accessToken, {
+          clientUuid: crypto.randomUUID(),
+          inning: currentPointer.inning,
+          half: currentPointer.half,
+          type: 'runner_advance',
+          runnerId: move.runnerId,
+          runnerAtbatId: move.atbatId,
+          toBase: move.toBase,
+          pitcherId: null,
+          runnerNote: null,
+          enteredBy,
+        });
+      }
     } catch (e) {
       alert(`記録に失敗しました: ${e.message || e}`);
     }

@@ -39,10 +39,10 @@ create table if not exists live_atbats (
   batter_id text not null,
   order_no int,
   outs_before int check (outs_before between 0 and 2),
-  -- scripts/validate.py の ALLOWED_RESULTS (AB_RESULTS | NON_AB_RESULTS) と同じ13種。
+  -- scripts/validate.py の ALLOWED_RESULTS (AB_RESULTS | NON_AB_RESULTS) と同じ14種。
   result text not null check (result in (
     'groundout', 'flyout', 'strikeout', 'walk', 'hbp', 'single', 'double', 'triple',
-    'home_run', 'sac_bunt', 'sac_fly', 'fielders_choice', 'reached_on_error'
+    'home_run', 'sac_bunt', 'sac_fly', 'fielders_choice', 'reached_on_error', 'strikeout_reached'
   )),
   ab boolean not null default false,
   hit_type text check (hit_type is null or hit_type in ('single', 'double', 'triple', 'home_run')),
@@ -71,15 +71,18 @@ create table if not exists live_events (
   inning int not null,
   half text not null check (half in ('top', 'bottom')),
   type text not null check (
-    type in ('stolen_base', 'caught_stealing', 'runner_out_advancing', 'runner_advance', 'wild_pitch', 'balk')
+    type in (
+      'stolen_base', 'caught_stealing', 'runner_out_advancing', 'runner_advance',
+      'wild_pitch', 'balk', 'passed_ball'
+    )
   ),
   -- 表示・エクスポート用(自チームは選手id、相手チームはopponent_batter_nameを入れる)。
   runner_id text,
   -- 走者を特定する正本のキー。自チーム・相手チームどちらの走者も、出塁した打席のidで一意に指す
   -- (相手選手には安定した選手idが無いため。js/derive.jsのderiveRunnersOnBase参照)。
   runner_atbat_id bigint references live_atbats(id),
-  -- type='runner_advance'の進塁先(盗塁のように+1塁ではなく、1塁→3塁のような複数進塁も1件で表現する)。
-  to_base text check (to_base is null or to_base in ('second', 'third')),
+  -- type='runner_advance'の進塁先。'home'は打席を介さない生還(暴投・ボーク・パスボール等)を表す。
+  to_base text check (to_base is null or to_base in ('second', 'third', 'home')),
   pitcher_id text,
   runner_note text,
   entered_by text,

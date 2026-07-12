@@ -5,11 +5,12 @@ const RESULT_LABELS = {
   groundout: 'ゴロ', flyout: 'フライ', strikeout: '三振', walk: '四球', hbp: '死球',
   single: '単打', double: '二塁打', triple: '三塁打', home_run: '本塁打',
   sac_bunt: '犠打', sac_fly: '犠飛', fielders_choice: '野選', reached_on_error: '失策出塁',
+  strikeout_reached: '振り逃げ',
 };
 
 const EVENT_LABELS = {
   stolen_base: '盗塁', caught_stealing: '盗塁死', runner_out_advancing: '走塁死',
-  runner_advance: '進塁', wild_pitch: '暴投', balk: 'ボーク',
+  runner_advance: '進塁', wild_pitch: '暴投', balk: 'ボーク', passed_ball: 'パスボール',
 };
 
 function clear(elm) {
@@ -29,11 +30,12 @@ export function renderConnectionStatus(elm, status) {
   elm.className = info.cls;
 }
 
-export function renderPointer(elm, pointer, playersById, score) {
+export function renderPointer(elm, pointer, playersById, score, runners) {
   clear(elm);
   const title = document.createElement('div');
   title.className = 'pointer-title';
-  title.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト`;
+  const baseState = runners ? ` ${formatBaseState(runners)}` : '';
+  title.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト${baseState}`;
   elm.appendChild(title);
 
   if (score) {
@@ -55,7 +57,19 @@ export function renderPointer(elm, pointer, playersById, score) {
   elm.appendChild(sub);
 }
 
-const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
+const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁', home: '本塁' };
+
+// 走者一覧から「一・二塁」「満塁」「走者なし」のような塁状況の短い表記を作る。
+function formatBaseState(runners) {
+  const bases = new Set(runners.map((r) => r.base));
+  if (bases.size === 3) return '満塁';
+  if (bases.size === 0) return '走者なし';
+  const parts = [];
+  if (bases.has('first')) parts.push('一');
+  if (bases.has('second')) parts.push('二');
+  if (bases.has('third')) parts.push('三');
+  return parts.join('・') + '塁';
+}
 
 // 現在の半イニングの走者一覧を軽量表示する(攻撃側・守備側どちらも)。
 export function renderRunners(elm, runners) {

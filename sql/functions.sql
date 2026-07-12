@@ -404,6 +404,7 @@ set search_path = public, pg_temp
 as $$
 declare
   v_row live_events;
+  v_is_new boolean;
 begin
   perform _check_access(p_game_id, p_access_token);
 
@@ -422,8 +423,18 @@ begin
   on conflict (game_id, client_uuid) do nothing
   returning * into v_row;
 
+  v_is_new := v_row.id is not null;
+
   if v_row.id is null then
     select * into v_row from live_events where game_id = p_game_id and client_uuid = p_client_uuid;
+  end if;
+
+  -- 暴投・ボーク・パスボール等、打席を介さずに走者が本塁まで進んだ(to_base='home')場合、
+  -- その走者の出塁元打席をscored=trueにする(submit_atbatのp_scored_runner_idsと同じ仕組み)。
+  -- client_uuidによる再送時にscoredを二重適用しないよう、新規挿入時のみ実行する。
+  if v_is_new and p_type = 'runner_advance' and p_to_base = 'home' and p_runner_atbat_id is not null then
+    update live_atbats set scored = true
+    where id = p_runner_atbat_id and deleted_at is null;
   end if;
 
   return v_row;
