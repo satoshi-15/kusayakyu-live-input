@@ -9,6 +9,9 @@ create table if not exists games (
   game_date date,
   our_half text not null check (our_half in ('top', 'bottom')),
   lineup jsonb not null default '[]'::jsonb,
+  -- 投手成績(相手打席の詳細)を記録するかどうか。試合作成時に選択、試合中も変更可能。
+  -- OFFの間は守備側halfを「アウトのみ」の簡易入力にする(game.html参照)。
+  track_pitching boolean not null default true,
   status text not null default 'open' check (status in ('open', 'closed', 'archived')),
   created_at timestamptz not null default now(),
   closed_at timestamptz
@@ -46,16 +49,15 @@ create table if not exists live_atbats (
   rbi int not null default 0 check (rbi between 0 and 4),
   scored boolean not null default false,
   detail text,
-  -- 守備側half(batter_id='opponent')のレコードで必須。rules/集計ルール.md セクション11参照。
+  -- 投手成績を記録する場合のみ入力(games.track_pitching参照)。OFF時はnullのままでよく、
+  -- aggregate_pitching()はpitcher_idが無いレコードを自動的にスキップする。
   pitcher_id text,
   opponent_batter_name text,
   entered_by text,
   deleted_at timestamptz,
   deleted_by text,
   created_at timestamptz not null default now(),
-  unique (game_id, client_uuid),
-  -- 守備側half(batter_id='opponent')のレコードはpitcher_id必須(rules/集計ルール.md セクション11)。
-  constraint pitcher_required_for_opponent check (batter_id <> 'opponent' or pitcher_id is not null)
+  unique (game_id, client_uuid)
 );
 
 create index if not exists live_atbats_game_idx on live_atbats (game_id, id);

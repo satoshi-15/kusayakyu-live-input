@@ -1,16 +1,27 @@
 // SupabaseのRPC関数呼び出しラッパー。書き込みは全てここを経由する(sql/functions.sql参照)。
 import { supabase } from './supabase-client.js';
 
-export async function createGame({ gameId, opponentName, gameDate, ourHalf, lineup }) {
+export async function createGame({ gameId, opponentName, gameDate, ourHalf, lineup, trackPitching }) {
   const { data, error } = await supabase.rpc('create_game', {
     p_game_id: gameId,
     p_opponent_name: opponentName,
     p_game_date: gameDate,
     p_our_half: ourHalf,
     p_lineup: lineup,
+    p_track_pitching: trackPitching,
   });
   if (error) throw error;
   return data; // access_token (uuid文字列)
+}
+
+export async function setTrackPitching(gameId, accessToken, value) {
+  const { data, error } = await supabase.rpc('set_track_pitching', {
+    p_game_id: gameId,
+    p_access_token: accessToken,
+    p_value: value,
+  });
+  if (error) throw error;
+  return data;
 }
 
 export async function fetchGame(gameId) {

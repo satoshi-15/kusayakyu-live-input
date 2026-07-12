@@ -40,6 +40,10 @@ const els = {
   modalCancel: document.getElementById('modal-cancel'),
   modalConfirm: document.getElementById('modal-confirm'),
   quickEventButtons: document.querySelectorAll('.quick-events button'),
+  pitchingOnlyButtons: document.querySelectorAll('.pitching-only'),
+  trackPitchingToggle: document.getElementById('track-pitching-toggle'),
+  defenseSimple: document.getElementById('defense-simple'),
+  simpleOutBtn: document.getElementById('simple-out-btn'),
 };
 
 if (!gameId || !accessToken) {
@@ -108,13 +112,32 @@ function updateSubmitDisabled() {
 }
 els.pitcherSelect.addEventListener('change', updateSubmitDisabled);
 
+function renderTrackPitchingToggle() {
+  const on = state.game.track_pitching;
+  els.trackPitchingToggle.textContent = `投手成績記録: ${on ? 'ON' : 'OFF'}`;
+  for (const btn of els.pitchingOnlyButtons) btn.classList.toggle('hidden', !on);
+}
+
 function updatePointerAndForm() {
   currentPointer = derivePointer(state.game, state.atbats, state.events);
   els.pointerBox.classList.add('highlight');
   setTimeout(() => els.pointerBox.classList.remove('highlight'), 400);
   renderPointer(els.pointerBox, currentPointer, state.playersById);
+  renderTrackPitchingToggle();
+
+  if (state.game.status !== 'open') {
+    els.form.classList.add('hidden');
+    els.defenseSimple.classList.add('hidden');
+    return;
+  }
 
   const isOffense = currentPointer.side === 'offense';
+  const useSimpleDefense = !isOffense && !state.game.track_pitching;
+
+  els.form.classList.toggle('hidden', useSimpleDefense);
+  els.defenseSimple.classList.toggle('hidden', !useSimpleDefense);
+  if (useSimpleDefense) return;
+
   els.offenseFields.classList.toggle('hidden', !isOffense);
   els.defenseFields.classList.toggle('hidden', isOffense);
 
@@ -290,6 +313,44 @@ els.form.addEventListener('submit', async (ev) => {
   els.opponentBatterName.value = '';
 });
 
+els.trackPitchingToggle.addEventListener('click', async () => {
+  try {
+    await api.setTrackPitching(gameId, accessToken, !state.game.track_pitching);
+  } catch (e) {
+    alert(`切り替えに失敗しました: ${e.message || e}`);
+  }
+});
+
+els.simpleOutBtn.addEventListener('click', () => {
+  const enteredBy = els.enteredByInput.value.trim();
+  if (!enteredBy) { alert('入力者名を入力してください'); return; }
+  if (!pointerMatchesExpected(currentPointer.lastAliveKey, state.atbats, state.events)) {
+    alert('他の人が入力しました。最新の状況を確認してから、もう一度お願いします。');
+    return;
+  }
+  const clientUuid = crypto.randomUUID();
+  const payload = {
+    clientUuid,
+    inning: currentPointer.inning,
+    half: currentPointer.half,
+    batterId: 'opponent',
+    orderNo: null,
+    outsBefore: currentPointer.outs,
+    result: 'groundout',
+    ab: true,
+    hitType: null,
+    rbi: 0,
+    scored: false,
+    detail: null,
+    pitcherId: null,
+    opponentBatterName: null,
+    enteredBy,
+  };
+  lastSubmittedClientUuid = clientUuid;
+  lastSubmittedAt = Date.now();
+  submitWithRetry(clientUuid, () => payload);
+});
+
 els.closeGameBtn.addEventListener('click', async () => {
   const ok = await confirmModal('試合を終了します。以降は入力できなくなります。よろしいですか?');
   if (!ok) return;
@@ -310,14 +371,18 @@ async function init() {
   } catch (e) {
     els.gameInfo.textContent = `読み込みに失敗しました: ${e.message || e}`;
     els.form.classList.add('hidden');
+    els.defenseSimple.classList.add('hidden');
     els.closeGameBtn.classList.add('hidden');
+    els.trackPitchingToggle.classList.add('hidden');
     document.querySelector('.quick-events').classList.add('hidden');
     return;
   }
   if (!game) {
     els.gameInfo.textContent = '試合が見つかりません。URLを確認してください。';
     els.form.classList.add('hidden');
+    els.defenseSimple.classList.add('hidden');
     els.closeGameBtn.classList.add('hidden');
+    els.trackPitchingToggle.classList.add('hidden');
     document.querySelector('.quick-events').classList.add('hidden');
     return;
   }
@@ -371,11 +436,13 @@ async function init() {
     onGameChange: (payload) => {
       state.game = payload.new;
       if (state.game.status !== 'open') {
-        els.form.classList.add('hidden');
         els.closeGameBtn.classList.add('hidden');
+        els.trackPitchingToggle.classList.add('hidden');
         document.querySelector('.quick-events').classList.add('hidden');
         els.gameInfo.textContent = `${state.game.opponent_name || ''} / 試合終了`;
       }
+      // track_pitching切り替え・攻守表示等をこの1箇所で再計算する(updatePointerAndFormが単一の情報源)。
+      renderAll();
     },
   });
 

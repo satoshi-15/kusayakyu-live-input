@@ -13,14 +13,25 @@
     <span id="connection-status">●</span>
   </header>
 
+  <button type="button" id="track-pitching-toggle" class="btn-secondary" style="margin:8px 0;">投手成績記録: -</button>
+
+  <label>入力者名
+    <input type="text" id="entered-by-input" placeholder="あなたの名前" />
+  </label>
+
   <div id="pointer-box"></div>
 
   <div class="quick-events">
     <button type="button" class="btn-secondary" data-event="stolen_base">盗塁</button>
     <button type="button" class="btn-secondary" data-event="caught_stealing">盗塁死</button>
     <button type="button" class="btn-secondary" data-event="runner_out_advancing">走塁死</button>
-    <button type="button" class="btn-secondary" data-event="wild_pitch">暴投</button>
-    <button type="button" class="btn-secondary" data-event="balk">ボーク</button>
+    <button type="button" class="btn-secondary pitching-only" data-event="wild_pitch">暴投</button>
+    <button type="button" class="btn-secondary pitching-only" data-event="balk">ボーク</button>
+  </div>
+
+  <div id="defense-simple" class="hidden">
+    <p>投手成績を記録しない設定です。相手の攻撃でアウトになるたびに押してください。</p>
+    <button type="button" id="simple-out-btn" class="btn-primary">アウト(守備)</button>
   </div>
 
   <form id="atbat-form">
@@ -48,9 +59,6 @@
       <input type="number" id="rbi-input" min="0" max="4" value="0" />
     </label>
     <label><input type="checkbox" id="scored-checkbox" style="display:inline-block;width:auto;" /> 生還した</label>
-    <label>入力者名
-      <input type="text" id="entered-by-input" placeholder="あなたの名前" required />
-    </label>
 
     <button type="submit" id="submit-btn" class="btn-primary">この打席を記録</button>
   </form>

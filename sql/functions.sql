@@ -28,12 +28,16 @@ $$;
 revoke execute on function _check_access(text, uuid) from public, anon, authenticated;
 
 
+-- 既存DBに古い5引数版(track_pitching追加前)が残っている場合に備えて明示的に削除する。
+drop function if exists create_game(text, text, date, text, jsonb);
+
 create or replace function create_game(
   p_game_id text,
   p_opponent_name text,
   p_game_date date,
   p_our_half text,
-  p_lineup jsonb
+  p_lineup jsonb,
+  p_track_pitching boolean default true
 )
 returns uuid
 language plpgsql
@@ -43,8 +47,9 @@ as $$
 declare
   v_token uuid;
 begin
-  insert into games (game_id, opponent_name, game_date, our_half, lineup)
-  values (p_game_id, p_opponent_name, p_game_date, p_our_half, coalesce(p_lineup, '[]'::jsonb));
+  insert into games (game_id, opponent_name, game_date, our_half, lineup, track_pitching)
+  values (p_game_id, p_opponent_name, p_game_date, p_our_half, coalesce(p_lineup, '[]'::jsonb),
+          coalesce(p_track_pitching, true));
 
   insert into game_secrets (game_id) values (p_game_id)
   returning access_token into v_token;
@@ -53,7 +58,30 @@ begin
 end;
 $$;
 
-grant execute on function create_game(text, text, date, text, jsonb) to anon, authenticated;
+grant execute on function create_game(text, text, date, text, jsonb, boolean) to anon, authenticated;
+
+
+-- 試合中いつでも投手成績記録のON/OFFを切り替える(実装計画フェーズ2のMVP要求の未実装分)。
+create or replace function set_track_pitching(p_game_id text, p_access_token uuid, p_value boolean)
+returns games
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_row games;
+begin
+  perform _check_access(p_game_id, p_access_token);
+
+  update games set track_pitching = p_value
+  where game_id = p_game_id
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function set_track_pitching(text, uuid, boolean) to anon, authenticated;
 
 
 create or replace function submit_atbat(
