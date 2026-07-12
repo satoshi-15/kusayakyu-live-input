@@ -1,11 +1,10 @@
 // 打席・イベント一覧から「現在の入力対象」を都度導出する純粋関数群。
 // サーバー側にポインタ状態を持たない設計(実装計画フェーズ2参照)。
 
-export const OUT_RESULTS = new Set(['groundout', 'flyout', 'strikeout', 'sac_bunt', 'sac_fly', 'fielders_choice']);
-// 自チーム打席のfielders_choiceは、打者自身の結果だけでは自動的にアウトとしない。
+export const OUT_RESULTS = new Set(['groundout', 'flyout', 'strikeout', 'sac_bunt', 'sac_fly']);
+// fielders_choiceは、打者自身の結果だけでは自動的にアウトとしない(自チーム・相手チーム共通)。
 // 併殺(打者もアウト)か野選(打者はセーフ、走者のみアウト)かでアウト数が変わるため、
 // 走者への明示的なアウトマーキング(runner_out_advancingイベント)からのみアウトを数える。
-// 相手打席は個別走者を追跡していないため、従来通りfielders_choice自体をアウトとみなす。
 // 走者が単独でアウトになるイベントもアウトカウントに加える(盗塁死・走塁死)。
 // 例: 「右前ヒットで2塁を狙って走塁死」→打席自体はヒットだが、このイベントでアウトが1つ増える。
 export const OUT_EVENT_TYPES = new Set(['caught_stealing', 'runner_out_advancing']);
@@ -53,7 +52,6 @@ export function deriveInningState(atbats, events) {
   const outsInHalf = timeline.filter((item) => {
     if (item.ref.inning !== inning || item.ref.half !== half) return false;
     if (item.kind !== 'atbat') return OUT_EVENT_TYPES.has(item.ref.type);
-    if (item.ref.result === 'fielders_choice' && item.ref.batter_id !== 'opponent') return false;
     return OUT_RESULTS.has(item.ref.result);
   }).length;
 
@@ -99,38 +97,45 @@ export function derivePointer(game, atbats, events) {
   };
 }
 
-// 出塁した結果ごとの推定初期塁(進塁は追跡しない簡易版。盗塁のみ反映する)。
+// 出塁した結果ごとの初期塁。以降の進塁は盗塁イベント・runner_advanceイベントで明示的に反映する。
 const BASE_ON_HIT = {
   single: 'first', walk: 'first', hbp: 'first', reached_on_error: 'first', fielders_choice: 'first',
   double: 'second', triple: 'third',
 };
 const NEXT_BASE = { first: 'second', second: 'third' };
 
-// 現在の半イニングで塁に出ていて、まだ生還・アウトになっていない自チームの走者一覧を返す。
-// 相手の攻撃中(相手選手個別を追跡していないため)は常に空配列を返す。
-// 進塁(単打で1塁走者が3塁まで等)は追跡せず、盗塁による進塁のみ反映する簡易版。
+// 現在の半イニングで塁に出ていて、まだ生還・アウトになっていない走者一覧を返す(攻撃側・守備側共通)。
+// 走者は「出塁した打席のid」で識別する(相手選手には安定した選手idが無いため。自チームは
+// 選手id、相手チームはopponent_batter_nameを表示用に持たせる)。
+// 進塁は、盗塁イベント(1つ先の塁へ)とrunner_advanceイベント(明示的な進塁先)の両方を反映する。
 export function deriveRunnersOnBase(game, atbats, events) {
   const { inning, half } = deriveInningState(atbats, events);
-  if (half !== game.our_half) return [];
 
-  const onBase = new Map(); // batterId -> {atbatId, batterId, orderNo, base}
+  const onBase = new Map(); // atbatId -> {atbatId, batterId, orderNo, base, opponentBatterName}
   for (const a of aliveAtbats(atbats)) {
     if (a.inning !== inning || a.half !== half) continue;
-    if (a.batter_id === 'opponent' || a.scored) continue;
+    if (a.scored) continue;
     const base = BASE_ON_HIT[a.result];
     if (!base) continue;
-    onBase.set(a.batter_id, { atbatId: a.id, batterId: a.batter_id, orderNo: a.order_no, base });
+    onBase.set(a.id, {
+      atbatId: a.id, batterId: a.batter_id, orderNo: a.order_no, base,
+      opponentBatterName: a.batter_id === 'opponent' ? (a.opponent_batter_name || null) : null,
+    });
   }
 
   for (const item of mergeTimeline(atbats, events)) {
     if (item.kind !== 'event') continue;
     const e = item.ref;
     if (e.inning !== inning || e.half !== half) continue;
+    if (e.runner_atbat_id == null) continue;
     if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing') {
-      onBase.delete(e.runner_id);
+      onBase.delete(e.runner_atbat_id);
     } else if (e.type === 'stolen_base') {
-      const r = onBase.get(e.runner_id);
+      const r = onBase.get(e.runner_atbat_id);
       if (r && NEXT_BASE[r.base]) r.base = NEXT_BASE[r.base];
+    } else if (e.type === 'runner_advance') {
+      const r = onBase.get(e.runner_atbat_id);
+      if (r && e.to_base) r.base = e.to_base;
     }
   }
 

@@ -24,6 +24,16 @@ export async function setTrackPitching(gameId, accessToken, value) {
   return data;
 }
 
+export async function updateLineup(gameId, accessToken, lineup) {
+  const { data, error } = await supabase.rpc('update_lineup', {
+    p_game_id: gameId,
+    p_access_token: accessToken,
+    p_lineup: lineup,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function fetchGame(gameId) {
   const { data, error } = await supabase.from('games').select('*').eq('game_id', gameId).maybeSingle();
   if (error) throw error;
@@ -63,6 +73,7 @@ export async function submitAtbat(gameId, accessToken, payload) {
     p_entered_by: payload.enteredBy,
     p_scored_runner_ids: payload.scoredRunnerIds || [],
     p_out_runner_ids: payload.outRunnerIds || [],
+    p_advanced_runner_moves: payload.advancedRunnerMoves || [],
   });
   if (error) throw error;
   return data;
@@ -120,6 +131,8 @@ export async function submitEvent(gameId, accessToken, payload) {
     p_pitcher_id: payload.pitcherId,
     p_runner_note: payload.runnerNote,
     p_entered_by: payload.enteredBy,
+    p_runner_atbat_id: payload.runnerAtbatId ?? null,
+    p_to_base: payload.toBase ?? null,
   });
   if (error) throw error;
   return data;

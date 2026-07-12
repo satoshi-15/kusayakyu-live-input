@@ -21,6 +21,17 @@
   </header>
 
   <button type="button" id="track-pitching-toggle" class="btn-secondary" style="margin:8px 0;">投手成績記録: -</button>
+  <button type="button" id="lineup-edit-toggle-btn" class="btn-secondary" style="margin:8px 0;">オーダーを編集</button>
+
+  <div id="lineup-edit-box" class="hidden">
+    <p class="field-hint">打順・守備位置を修正できます(試合中いつでも変更可能)</p>
+    <div id="lineup-edit-rows"></div>
+    <button type="button" id="lineup-edit-add-row" class="btn-secondary">+ 選手を追加</button>
+    <div class="lineup-edit-actions">
+      <button type="button" id="lineup-edit-cancel" class="btn-secondary">キャンセル</button>
+      <button type="button" id="lineup-edit-save" class="btn-primary">保存</button>
+    </div>
+  </div>
 
   <label>入力者名
     <input type="text" id="entered-by-input" placeholder="あなたの名前" />
@@ -52,15 +63,6 @@
       <label id="batter-other-label" class="hidden">打者(自由入力、players.jsonのid。例: minamihara)
         <input type="text" id="batter-other-input" />
       </label>
-      <div id="runners-scored-box" class="hidden">
-        <p class="field-hint">この打席で他の走者に変化はありましたか?(生還・アウトを選択、複数可)</p>
-        <div id="runners-scored-list"></div>
-      </div>
-      <div id="batter-fc-box" class="hidden">
-        <p class="field-hint">打者はどうなりましたか?</p>
-        <label><input type="radio" name="batter-fc" value="out" checked style="display:inline-block;width:auto;" /> アウト(併殺)</label>
-        <label><input type="radio" name="batter-fc" value="safe" style="display:inline-block;width:auto;" /> セーフ(野選、打点は付与されません)</label>
-      </div>
     </div>
     <div id="defense-fields" class="hidden">
       <label>投手(交代した場合はここで変更)
@@ -69,6 +71,16 @@
       <label>相手打者名(任意)
         <input type="text" id="opponent-batter-name" placeholder="例: 4番 田中" />
       </label>
+    </div>
+
+    <div id="runners-scored-box" class="hidden">
+      <p class="field-hint">この打席で他の走者に変化はありましたか?(生還・進塁・アウトを選択、複数可)</p>
+      <div id="runners-scored-list"></div>
+    </div>
+    <div id="batter-fc-box" class="hidden">
+      <p class="field-hint">打者はどうなりましたか?</p>
+      <label><input type="radio" name="batter-fc" value="out" checked style="display:inline-block;width:auto;" /> アウト(併殺)</label>
+      <label><input type="radio" name="batter-fc" value="safe" style="display:inline-block;width:auto;" /> セーフ(野選、打点は付与されません)</label>
     </div>
 
     <label>結果(打球方向まで選択)

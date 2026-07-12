@@ -70,9 +70,16 @@ create table if not exists live_events (
   client_uuid uuid not null,
   inning int not null,
   half text not null check (half in ('top', 'bottom')),
-  type text not null check (type in ('stolen_base', 'caught_stealing', 'runner_out_advancing', 'wild_pitch', 'balk')),
-  -- stolen_base/caught_stealingで必須(誰の盗塁かをbaserunning_events.jsonのrunner_idとして引き継ぐため)。
+  type text not null check (
+    type in ('stolen_base', 'caught_stealing', 'runner_out_advancing', 'runner_advance', 'wild_pitch', 'balk')
+  ),
+  -- 表示・エクスポート用(自チームは選手id、相手チームはopponent_batter_nameを入れる)。
   runner_id text,
+  -- 走者を特定する正本のキー。自チーム・相手チームどちらの走者も、出塁した打席のidで一意に指す
+  -- (相手選手には安定した選手idが無いため。js/derive.jsのderiveRunnersOnBase参照)。
+  runner_atbat_id bigint references live_atbats(id),
+  -- type='runner_advance'の進塁先(盗塁のように+1塁ではなく、1塁→3塁のような複数進塁も1件で表現する)。
+  to_base text check (to_base is null or to_base in ('second', 'third')),
   pitcher_id text,
   runner_note text,
   entered_by text,

@@ -88,12 +88,42 @@ $$;
 grant execute on function set_track_pitching(text, uuid, boolean) to anon, authenticated;
 
 
--- 既存DBに古い17引数版・18引数版(走者アウト一括マーク追加前)が残っている場合に備えて明示的に削除する。
+-- 試合作成後にオーダー(打順・守備位置)の記載ミスに気づいた場合、試合中いつでも編集できるようにする。
+create or replace function update_lineup(p_game_id text, p_access_token uuid, p_lineup jsonb)
+returns games
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_row games;
+begin
+  perform _check_access(p_game_id, p_access_token);
+
+  if not exists (select 1 from games where game_id = p_game_id and status = 'open') then
+    raise exception 'game % is not open', p_game_id;
+  end if;
+
+  update games set lineup = coalesce(p_lineup, '[]'::jsonb)
+  where game_id = p_game_id
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function update_lineup(text, uuid, jsonb) to anon, authenticated;
+
+
+-- 既存DBに古い17/18/19引数版(進塁記録追加前)が残っている場合に備えて明示的に削除する。
 drop function if exists submit_atbat(
   text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text
 );
 drop function if exists submit_atbat(
   text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[]
+);
+drop function if exists submit_atbat(
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[], bigint[]
 );
 
 create or replace function submit_atbat(
@@ -115,7 +145,8 @@ create or replace function submit_atbat(
   p_opponent_batter_name text,
   p_entered_by text,
   p_scored_runner_ids bigint[] default '{}',
-  p_out_runner_ids bigint[] default '{}'
+  p_out_runner_ids bigint[] default '{}',
+  p_advanced_runner_moves jsonb default '[]'
 )
 returns live_atbats
 language plpgsql
@@ -128,6 +159,9 @@ declare
   v_out_batter_id text;
   v_is_new boolean;
   v_out_seq int := 0;
+  v_move jsonb;
+  v_move_atbat_id bigint;
+  v_move_batter_id text;
 begin
   perform _check_access(p_game_id, p_access_token);
 
@@ -167,6 +201,9 @@ begin
   -- この打席と同一プレーでアウトになった既存走者を、走塁死イベントと同じ形でlive_eventsに記録する
   -- (例: 三塁走者がホームで刺されたフィルダースチョイス)。既存の「走塁死」クイックイベントと
   -- 同じtype='runner_out_advancing'を使うことで、アウトカウント・走者一覧の除去ロジックを共用する。
+  -- pitcher_idはこの打席自身のp_pitcher_id(相手打席=守備側でのみ非null)を引き継ぐ。これにより
+  -- aggregate.pyのaggregate_pitching()が野選での走者アウトも投手の奪アウト数に正しく計上できる
+  -- (fielders_choice自体はPITCHING_OUT_RESULTSから除外済みのため、ここが唯一のアウト計上経路)。
   -- created_atは明示的にv_row.created_atより後の時刻を指定する: 同一トランザクション内では
   -- now()がトランザクション開始時刻を返すため、何も指定しないとこの打席の行と全く同じ
   -- created_atになってしまい、import_from_supabase.pyのafter_seq算出(created_at基準の前後判定)が
@@ -180,10 +217,35 @@ begin
       if v_out_batter_id is not null then
         v_out_seq := v_out_seq + 1;
         insert into live_events (
-          game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by, created_at
+          game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, pitcher_id, runner_note,
+          entered_by, created_at
         ) values (
           p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_out_advancing',
-          v_out_batter_id, null, null, p_entered_by,
+          v_out_batter_id, v_out_runner_id, p_pitcher_id, null, p_entered_by,
+          v_row.created_at + (v_out_seq * interval '1 millisecond')
+        );
+      end if;
+    end loop;
+  end if;
+
+  -- 同じ打席の中で「進塁」を選択された既存走者を、盗塁と同じ仕組みで走者一覧のbaseに反映する
+  -- (例: 1塁走者が単打で3塁まで進んだ場合など)。p_advanced_runner_movesは
+  -- [{"atbat_id": 123, "to_base": "second"}, ...] 形式。created_atの扱いはp_out_runner_idsと同じ。
+  if v_is_new and jsonb_array_length(p_advanced_runner_moves) > 0 then
+    for v_move in select * from jsonb_array_elements(p_advanced_runner_moves)
+    loop
+      v_move_atbat_id := (v_move->>'atbat_id')::bigint;
+      select batter_id into v_move_batter_id from live_atbats
+      where game_id = p_game_id and id = v_move_atbat_id and deleted_at is null;
+
+      if v_move_batter_id is not null then
+        v_out_seq := v_out_seq + 1;
+        insert into live_events (
+          game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, to_base, pitcher_id,
+          runner_note, entered_by, created_at
+        ) values (
+          p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_advance',
+          v_move_batter_id, v_move_atbat_id, v_move->>'to_base', null, null, p_entered_by,
           v_row.created_at + (v_out_seq * interval '1 millisecond')
         );
       end if;
@@ -195,7 +257,8 @@ end;
 $$;
 
 grant execute on function submit_atbat(
-  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[], bigint[]
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text,
+  bigint[], bigint[], jsonb
 ) to anon, authenticated;
 
 
@@ -317,6 +380,9 @@ $$;
 grant execute on function undo_last_atbat(text, uuid, text) to anon, authenticated;
 
 
+-- 既存DBに古い10引数版(runner_atbat_id/to_base追加前)が残っている場合に備えて明示的に削除する。
+drop function if exists submit_event(text, uuid, uuid, int, text, text, text, text, text, text);
+
 create or replace function submit_event(
   p_game_id text,
   p_access_token uuid,
@@ -327,7 +393,9 @@ create or replace function submit_event(
   p_runner_id text,
   p_pitcher_id text,
   p_runner_note text,
-  p_entered_by text
+  p_entered_by text,
+  p_runner_atbat_id bigint default null,
+  p_to_base text default null
 )
 returns live_events
 language plpgsql
@@ -343,8 +411,14 @@ begin
     raise exception 'game % is not open', p_game_id;
   end if;
 
-  insert into live_events (game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by)
-  values (p_game_id, p_client_uuid, p_inning, p_half, p_type, p_runner_id, p_pitcher_id, p_runner_note, p_entered_by)
+  insert into live_events (
+    game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by,
+    runner_atbat_id, to_base
+  )
+  values (
+    p_game_id, p_client_uuid, p_inning, p_half, p_type, p_runner_id, p_pitcher_id, p_runner_note, p_entered_by,
+    p_runner_atbat_id, p_to_base
+  )
   on conflict (game_id, client_uuid) do nothing
   returning * into v_row;
 
@@ -356,7 +430,9 @@ begin
 end;
 $$;
 
-grant execute on function submit_event(text, uuid, uuid, int, text, text, text, text, text, text) to anon, authenticated;
+grant execute on function submit_event(
+  text, uuid, uuid, int, text, text, text, text, text, text, bigint, text
+) to anon, authenticated;
 
 
 create or replace function soft_delete_event(p_id bigint, p_access_token uuid, p_deleted_by text)

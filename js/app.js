@@ -1,10 +1,13 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
 import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase } from './derive.js';
-
-const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderRunners } from './render.js';
 import { RESULT_OPTIONS, findResultOption } from './result-options.js';
+import { addLineupRow, collectLineup } from './lineup-editor.js';
+
+const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
+// 走者の現在の塁から見て、まだ進める先の塁一覧(生還は別選択肢のため含まない)。
+const ADVANCE_TARGETS = { first: ['second', 'third'], second: ['third'], third: [] };
 
 function parseHash() {
   const hash = window.location.hash.replace(/^#/, '');
@@ -52,6 +55,12 @@ const els = {
   simpleOutBtn: document.getElementById('simple-out-btn'),
   simpleReachBtn: document.getElementById('simple-reach-btn'),
   simpleScoredCheckbox: document.getElementById('simple-scored-checkbox'),
+  lineupEditToggleBtn: document.getElementById('lineup-edit-toggle-btn'),
+  lineupEditBox: document.getElementById('lineup-edit-box'),
+  lineupEditRows: document.getElementById('lineup-edit-rows'),
+  lineupEditAddRow: document.getElementById('lineup-edit-add-row'),
+  lineupEditCancel: document.getElementById('lineup-edit-cancel'),
+  lineupEditSave: document.getElementById('lineup-edit-save'),
 };
 
 if (!gameId || !accessToken) {
@@ -87,24 +96,26 @@ function confirmModal(message) {
   });
 }
 
-// 塁に出ている自チーム走者が複数いる場合、選手ID手入力の代わりにドロップダウンで選ばせる。
+// 塁に出ている走者が複数いる場合、選手ID手入力の代わりにドロップダウンで選ばせる。
+// atbatId(打席id)をvalueにする: 相手走者はbatterIdが全員"opponent"で一意にならないため。
+// 選ばれた走者オブジェクト(またはnull)をresolveする。
 function selectRunnerModal(runners) {
   return new Promise((resolve) => {
     els.modalMessage.textContent = '走者を選択してください';
     const select = document.createElement('select');
     for (const r of runners) {
-      const name = state.playersById.get(r.batterId)?.display_name || r.batterId;
+      const name = runnerDisplayName(r);
       const opt = document.createElement('option');
-      opt.value = r.batterId;
+      opt.value = String(r.atbatId);
       opt.textContent = `${r.orderNo ?? ''}番 ${name}(${BASE_LABELS[r.base] || ''})`;
       select.appendChild(opt);
     }
     els.modalMessage.appendChild(select);
     els.modalOverlay.classList.remove('hidden');
-    const cleanup = (value) => {
+    const cleanup = (atbatId) => {
       els.modalOverlay.classList.add('hidden');
       select.remove();
-      resolve(value);
+      resolve(atbatId ? runners.find((r) => r.atbatId === Number(atbatId)) : null);
     };
     els.modalConfirm.onclick = () => cleanup(select.value);
     els.modalCancel.onclick = () => cleanup(null);
@@ -143,7 +154,7 @@ function isFcEligibleResult(result) {
 }
 
 function fcApplicable() {
-  if (!currentPointer || currentPointer.side !== 'offense') return false;
+  if (!currentPointer) return false;
   const opt = findResultOption(els.resultSelect.value);
   if (!opt || !isFcEligibleResult(opt.result)) return false;
   return !!els.runnersScoredList.querySelector('input[type="radio"][value="out"]:checked');
@@ -164,26 +175,38 @@ function syncBatterFcState() {
   if (safe) els.rbiInput.value = 0;
 }
 
-// 現在の打者以外の走者一覧を、走者ごとに「そのまま/生還/アウト」の3択で出す
+function runnerDisplayName(r) {
+  if (r.batterId !== 'opponent') return state.playersById.get(r.batterId)?.display_name || r.batterId;
+  return r.opponentBatterName || '相手打者';
+}
+
+// 現在の打席の打者以外の走者一覧を、走者ごとに「そのまま/進塁(塁ごと)/生還/アウト」で出す
 // (例: A選手のヒットで既に塁に出ていたB選手がホームインした場合、両方を同時に記録できる。
-// アウトを選んだ場合は、走塁死と同じ仕組みでアウトが加算される)。
+// アウトを選んだ場合は走塁死と同じ、進塁を選んだ場合は盗塁と同じ仕組みでlive_eventsに記録される)。
+// 攻撃側・守備側どちらでも同じ仕組みで動く(走者は打席idで識別するため相手選手にも使える)。
 function renderRunnersScoredCheckboxes() {
-  if (!currentPointer || currentPointer.side !== 'offense') {
+  if (!currentPointer || currentPointer.side == null) {
     els.runnersScoredBox.classList.add('hidden');
     els.batterFcBox.classList.add('hidden');
     return;
   }
-  const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
-    .filter((r) => r.batterId !== els.batterSelect.value);
+  const isOffense = currentPointer.side === 'offense';
+  let runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+  if (isOffense) runners = runners.filter((r) => r.batterId !== els.batterSelect.value);
+
   els.runnersScoredBox.classList.toggle('hidden', runners.length === 0);
   els.runnersScoredList.innerHTML = runners.map((r) => {
-    const name = state.playersById.get(r.batterId)?.display_name || r.batterId;
+    const name = runnerDisplayName(r);
     const baseLabel = BASE_LABELS[r.base] || '';
     const groupName = `runner-${r.atbatId}`;
+    const advanceOptions = (ADVANCE_TARGETS[r.base] || [])
+      .map((base) => `<label><input type="radio" name="${groupName}" value="advance:${base}" style="display:inline-block;width:auto;" /> ${BASE_LABELS[base]}へ進塁</label>`)
+      .join('');
     return `
       <div class="runner-row">
         <span>${r.orderNo ?? ''}番 ${name}(${baseLabel})</span>
         <label><input type="radio" name="${groupName}" value="none" checked style="display:inline-block;width:auto;" /> そのまま</label>
+        ${advanceOptions}
         <label><input type="radio" name="${groupName}" value="scored" style="display:inline-block;width:auto;" /> 生還</label>
         <label><input type="radio" name="${groupName}" value="out" style="display:inline-block;width:auto;" /> アウト</label>
       </div>`;
@@ -218,7 +241,7 @@ function updatePointerAndForm() {
   setTimeout(() => els.pointerBox.classList.remove('highlight'), 400);
   renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats));
   const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
-    .map((r) => ({ ...r, name: state.playersById.get(r.batterId)?.display_name || r.batterId }));
+    .map((r) => ({ ...r, name: runnerDisplayName(r) }));
   renderRunners(els.runnersBox, runners);
   renderTrackPitchingToggle();
 
@@ -321,18 +344,24 @@ for (const btn of els.quickEventButtons) {
     const pitcherId = needsPitcher ? (els.pitcherSelect.value || currentPointer?.currentPitcherId) : null;
     if (needsPitcher && !pitcherId) { alert('投手を選択してください'); return; }
     let runnerId = null;
+    let runnerAtbatId = null;
     if (needsRunner) {
       const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+      let picked = null;
       if (runners.length === 1) {
-        runnerId = runners[0].batterId;
+        picked = runners[0];
       } else if (runners.length > 1) {
-        runnerId = await selectRunnerModal(runners);
-        if (!runnerId) return;
+        picked = await selectRunnerModal(runners);
+        if (!picked) return;
       } else {
-        // 相手の攻撃中など、走者一覧を追跡していない場合は手入力にフォールバックする
+        // 走者一覧が空(データ不整合等)の場合は手入力にフォールバックする
         const guess = els.batterSelect.value !== '__other__' ? els.batterSelect.value : '';
         runnerId = prompt('走者(players.jsonのid)を入力してください', guess);
         if (!runnerId) return;
+      }
+      if (picked) {
+        runnerId = picked.batterId === 'opponent' ? (picked.opponentBatterName || null) : picked.batterId;
+        runnerAtbatId = picked.atbatId;
       }
     }
     try {
@@ -342,6 +371,7 @@ for (const btn of els.quickEventButtons) {
         half: currentPointer.half,
         type,
         runnerId,
+        runnerAtbatId,
         pitcherId,
         runnerNote: null,
         enteredBy,
@@ -407,10 +437,16 @@ els.form.addEventListener('submit', async (ev) => {
     ? (els.batterSelect.value === '__other__' ? els.batterOtherInput.value.trim() : els.batterSelect.value)
     : 'opponent';
 
-  const scoredRunnerIds = [...els.runnersScoredList.querySelectorAll('input[type="radio"][value="scored"]:checked')]
+  const checkedRunnerRadios = [...els.runnersScoredList.querySelectorAll('input[type="radio"]:checked')];
+  const scoredRunnerIds = checkedRunnerRadios
+    .filter((el) => el.value === 'scored')
     .map((el) => Number(el.name.replace('runner-', '')));
-  const outRunnerIds = [...els.runnersScoredList.querySelectorAll('input[type="radio"][value="out"]:checked')]
+  const outRunnerIds = checkedRunnerRadios
+    .filter((el) => el.value === 'out')
     .map((el) => Number(el.name.replace('runner-', '')));
+  const advancedRunnerMoves = checkedRunnerRadios
+    .filter((el) => el.value.startsWith('advance:'))
+    .map((el) => ({ atbat_id: Number(el.name.replace('runner-', '')), to_base: el.value.replace('advance:', '') }));
 
   // 打者が「セカンドゴロ」等を選び、走者をアウトにし、かつ「セーフ(野選)」を選んだ場合、
   // 表示上の結果(detail)は変えずに、送信するresultだけをfielders_choiceへ内部的に切り替える
@@ -443,6 +479,7 @@ els.form.addEventListener('submit', async (ev) => {
     enteredBy,
     scoredRunnerIds,
     outRunnerIds,
+    advancedRunnerMoves,
   };
 
   withDoubleTapGuard([els.submitBtn], (release) => {
@@ -507,6 +544,47 @@ function submitSimpleDefense(result, ab) {
 
 els.simpleOutBtn.addEventListener('click', () => submitSimpleDefense('groundout', true));
 els.simpleReachBtn.addEventListener('click', () => submitSimpleDefense('walk', false));
+
+// --- オーダー編集 ---
+els.lineupEditToggleBtn.addEventListener('click', () => {
+  const opening = els.lineupEditBox.classList.contains('hidden');
+  if (!opening) {
+    els.lineupEditBox.classList.add('hidden');
+    return;
+  }
+  els.lineupEditRows.innerHTML = '';
+  const lineup = state.game.lineup || [];
+  const rowCount = Math.max(lineup.length, 9);
+  for (let i = 1; i <= rowCount; i++) {
+    const prefill = lineup.find((r) => r.order_no === i) || null;
+    addLineupRow(els.lineupEditRows, i, state.players, prefill);
+  }
+  els.lineupEditBox.classList.remove('hidden');
+});
+
+els.lineupEditAddRow.addEventListener('click', () => {
+  const nextOrder = els.lineupEditRows.querySelectorAll('[data-role="batter"]').length + 1;
+  addLineupRow(els.lineupEditRows, nextOrder, state.players);
+});
+
+els.lineupEditCancel.addEventListener('click', () => {
+  els.lineupEditBox.classList.add('hidden');
+});
+
+els.lineupEditSave.addEventListener('click', async () => {
+  const lineup = collectLineup(els.lineupEditRows);
+  const hasOurAtbats = state.atbats.some((a) => !a.deleted_at && a.batter_id !== 'opponent');
+  if (hasOurAtbats) {
+    const ok = await confirmModal('既に記録された打席があります。オーダーを変更すると、次の打者の表示がズレる可能性があります。保存しますか?');
+    if (!ok) return;
+  }
+  try {
+    await api.updateLineup(gameId, accessToken, lineup);
+    els.lineupEditBox.classList.add('hidden');
+  } catch (e) {
+    alert(`オーダーの保存に失敗しました: ${e.message || e}`);
+  }
+});
 
 els.closeGameBtn.addEventListener('click', async () => {
   const ok = await confirmModal('試合を終了します。以降は入力できなくなります。よろしいですか?');
@@ -598,6 +676,8 @@ async function init() {
         document.querySelector('.quick-events').classList.add('hidden');
         els.gameInfo.textContent = `${state.game.opponent_name || ''} / 試合終了`;
       }
+      // オーダー編集(update_lineup)でlineupが変わった場合に打者セレクトへ反映する。
+      populateSelects();
       // track_pitching切り替え・攻守表示等をこの1箇所で再計算する(updatePointerAndFormが単一の情報源)。
       renderAll();
     },

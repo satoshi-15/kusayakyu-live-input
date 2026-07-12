@@ -8,7 +8,8 @@ const RESULT_LABELS = {
 };
 
 const EVENT_LABELS = {
-  stolen_base: '盗塁', caught_stealing: '盗塁死', wild_pitch: '暴投', balk: 'ボーク',
+  stolen_base: '盗塁', caught_stealing: '盗塁死', runner_out_advancing: '走塁死',
+  runner_advance: '進塁', wild_pitch: '暴投', balk: 'ボーク',
 };
 
 function clear(elm) {
@@ -56,7 +57,7 @@ export function renderPointer(elm, pointer, playersById, score) {
 
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
 
-// 自チーム攻撃中の走者一覧を軽量表示する(進塁は盗塁のみ反映する簡易版のため、参考程度)。
+// 現在の半イニングの走者一覧を軽量表示する(攻撃側・守備側どちらも)。
 export function renderRunners(elm, runners) {
   clear(elm);
   if (!runners.length) return;
@@ -104,7 +105,8 @@ export function renderRecentList(elm, atbats, events, playersById, handlers) {
     row.className = 'recent-row recent-row-event';
     const label = document.createElement('span');
     const runnerName = e.runner_id ? (playersById.get(e.runner_id)?.display_name || e.runner_id) : '';
-    label.textContent = `${e.inning}回${e.half === 'top' ? '表' : '裏'} ${EVENT_LABELS[e.type] || e.type}${runnerName ? ' ' + runnerName : ''}`;
+    const toBaseSuffix = e.type === 'runner_advance' && e.to_base ? `(${BASE_LABELS[e.to_base] || e.to_base}へ)` : '';
+    label.textContent = `${e.inning}回${e.half === 'top' ? '表' : '裏'} ${EVENT_LABELS[e.type] || e.type}${runnerName ? ' ' + runnerName : ''}${toBaseSuffix}`;
     row.appendChild(label);
     const delBtn = document.createElement('button');
     delBtn.textContent = '取消';
