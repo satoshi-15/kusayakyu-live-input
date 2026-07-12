@@ -67,7 +67,11 @@ form.addEventListener('submit', async (ev) => {
     localStorage.setItem(`kusayakyu:${gameId}:token`, accessToken);
     window.location.href = `./game.html#game=${encodeURIComponent(gameId)}&token=${encodeURIComponent(accessToken)}`;
   } catch (e) {
-    errorElm.textContent = `試合を作成できませんでした: ${e.message || e}`;
+    if (e.code === '23505') {
+      errorElm.textContent = `この日付(${gameDate})の試合は既に作成されています。同じ日に2試合ある場合は今のところ非対応です。`;
+    } else {
+      errorElm.textContent = `試合を作成できませんでした: ${e.message || e}`;
+    }
   }
 });
 
