@@ -28,6 +28,7 @@ const els = {
   batterOtherInput: document.getElementById('batter-other-input'),
   runnersScoredBox: document.getElementById('runners-scored-box'),
   runnersScoredList: document.getElementById('runners-scored-list'),
+  batterFcBox: document.getElementById('batter-fc-box'),
   pitcherSelect: document.getElementById('pitcher-select'),
   opponentBatterName: document.getElementById('opponent-batter-name'),
   resultSelect: document.getElementById('result-select'),
@@ -135,11 +136,41 @@ els.batterSelect.addEventListener('change', () => {
   renderRunnersScoredCheckboxes();
 });
 
-// 現在の打者以外に、この打席中に生還した可能性のある走者一覧をチェックボックスで出す
-// (例: A選手のヒットで既に塁に出ていたB選手がホームインした場合、両方を同時に記録できるようにする)。
+// 打者の結果が「セカンドゴロ」等(groundout/flyout)で、かつ走者を「アウト」にした場合のみ、
+// 「打者はどうなったか(併殺=打者もアウト / 野選=打者はセーフ)」を追加で確認する必要がある。
+function isFcEligibleResult(result) {
+  return result === 'groundout' || result === 'flyout';
+}
+
+function fcApplicable() {
+  if (!currentPointer || currentPointer.side !== 'offense') return false;
+  const opt = findResultOption(els.resultSelect.value);
+  if (!opt || !isFcEligibleResult(opt.result)) return false;
+  return !!els.runnersScoredList.querySelector('input[type="radio"][value="out"]:checked');
+}
+
+// 「セーフ(野選)」時はrules/集計ルール.md 5節により打点0固定とし、入力欄も編集不可にする。
+function syncBatterFcState() {
+  const applicable = fcApplicable();
+  els.batterFcBox.classList.toggle('hidden', !applicable);
+  if (!applicable) {
+    els.rbiInput.disabled = false;
+    const outRadio = els.batterFcBox.querySelector('input[value="out"]');
+    if (outRadio) outRadio.checked = true;
+    return;
+  }
+  const safe = els.batterFcBox.querySelector('input[name="batter-fc"]:checked')?.value === 'safe';
+  els.rbiInput.disabled = safe;
+  if (safe) els.rbiInput.value = 0;
+}
+
+// 現在の打者以外の走者一覧を、走者ごとに「そのまま/生還/アウト」の3択で出す
+// (例: A選手のヒットで既に塁に出ていたB選手がホームインした場合、両方を同時に記録できる。
+// アウトを選んだ場合は、走塁死と同じ仕組みでアウトが加算される)。
 function renderRunnersScoredCheckboxes() {
   if (!currentPointer || currentPointer.side !== 'offense') {
     els.runnersScoredBox.classList.add('hidden');
+    els.batterFcBox.classList.add('hidden');
     return;
   }
   const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
@@ -148,9 +179,21 @@ function renderRunnersScoredCheckboxes() {
   els.runnersScoredList.innerHTML = runners.map((r) => {
     const name = state.playersById.get(r.batterId)?.display_name || r.batterId;
     const baseLabel = BASE_LABELS[r.base] || '';
-    return `<label><input type="checkbox" class="runner-scored-checkbox" value="${r.atbatId}" style="display:inline-block;width:auto;" /> ${r.orderNo ?? ''}番 ${name}(${baseLabel})</label>`;
+    const groupName = `runner-${r.atbatId}`;
+    return `
+      <div class="runner-row">
+        <span>${r.orderNo ?? ''}番 ${name}(${baseLabel})</span>
+        <label><input type="radio" name="${groupName}" value="none" checked style="display:inline-block;width:auto;" /> そのまま</label>
+        <label><input type="radio" name="${groupName}" value="scored" style="display:inline-block;width:auto;" /> 生還</label>
+        <label><input type="radio" name="${groupName}" value="out" style="display:inline-block;width:auto;" /> アウト</label>
+      </div>`;
   }).join('');
+  syncBatterFcState();
 }
+
+els.runnersScoredList.addEventListener('change', syncBatterFcState);
+els.batterFcBox.addEventListener('change', syncBatterFcState);
+els.resultSelect.addEventListener('change', syncBatterFcState);
 
 function updateSubmitDisabled() {
   if (!currentPointer || currentPointer.side !== 'defense') {
@@ -364,6 +407,24 @@ els.form.addEventListener('submit', async (ev) => {
     ? (els.batterSelect.value === '__other__' ? els.batterOtherInput.value.trim() : els.batterSelect.value)
     : 'opponent';
 
+  const scoredRunnerIds = [...els.runnersScoredList.querySelectorAll('input[type="radio"][value="scored"]:checked')]
+    .map((el) => Number(el.name.replace('runner-', '')));
+  const outRunnerIds = [...els.runnersScoredList.querySelectorAll('input[type="radio"][value="out"]:checked')]
+    .map((el) => Number(el.name.replace('runner-', '')));
+
+  // 打者が「セカンドゴロ」等を選び、走者をアウトにし、かつ「セーフ(野選)」を選んだ場合、
+  // 表示上の結果(detail)は変えずに、送信するresultだけをfielders_choiceへ内部的に切り替える
+  // (打者自身はアウトにならないため。rules/集計ルール.md 5節参照)。
+  let effectiveResult = opt.result;
+  let effectiveRbi = Number(els.rbiInput.value) || 0;
+  if (!els.batterFcBox.classList.contains('hidden')) {
+    const safe = els.batterFcBox.querySelector('input[name="batter-fc"]:checked')?.value === 'safe';
+    if (safe) {
+      effectiveResult = 'fielders_choice';
+      effectiveRbi = 0;
+    }
+  }
+
   const payload = {
     clientUuid,
     inning: currentPointer.inning,
@@ -371,17 +432,17 @@ els.form.addEventListener('submit', async (ev) => {
     batterId,
     orderNo: isOffense ? currentPointer.nextOrderNo : null,
     outsBefore: currentPointer.outs,
-    result: opt.result,
-    ab: isAtBat(opt.result),
+    result: effectiveResult,
+    ab: isAtBat(effectiveResult),
     hitType: opt.hitType || null,
-    rbi: Number(els.rbiInput.value) || 0,
+    rbi: effectiveRbi,
     scored: els.scoredCheckbox.checked,
     detail: opt.detail,
     pitcherId: isOffense ? null : els.pitcherSelect.value,
     opponentBatterName: isOffense ? null : (els.opponentBatterName.value.trim() || null),
     enteredBy,
-    scoredRunnerIds: [...els.runnersScoredList.querySelectorAll('.runner-scored-checkbox:checked')]
-      .map((el) => Number(el.value)),
+    scoredRunnerIds,
+    outRunnerIds,
   };
 
   withDoubleTapGuard([els.submitBtn], (release) => {
@@ -391,6 +452,7 @@ els.form.addEventListener('submit', async (ev) => {
   });
 
   els.rbiInput.value = 0;
+  els.rbiInput.disabled = false;
   els.scoredCheckbox.checked = false;
   els.opponentBatterName.value = '';
 });

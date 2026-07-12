@@ -1,7 +1,11 @@
 // 打席・イベント一覧から「現在の入力対象」を都度導出する純粋関数群。
 // サーバー側にポインタ状態を持たない設計(実装計画フェーズ2参照)。
 
-export const OUT_RESULTS = new Set(['groundout', 'flyout', 'strikeout', 'fielders_choice']);
+export const OUT_RESULTS = new Set(['groundout', 'flyout', 'strikeout', 'sac_bunt', 'sac_fly', 'fielders_choice']);
+// 自チーム打席のfielders_choiceは、打者自身の結果だけでは自動的にアウトとしない。
+// 併殺(打者もアウト)か野選(打者はセーフ、走者のみアウト)かでアウト数が変わるため、
+// 走者への明示的なアウトマーキング(runner_out_advancingイベント)からのみアウトを数える。
+// 相手打席は個別走者を追跡していないため、従来通りfielders_choice自体をアウトとみなす。
 // 走者が単独でアウトになるイベントもアウトカウントに加える(盗塁死・走塁死)。
 // 例: 「右前ヒットで2塁を狙って走塁死」→打席自体はヒットだが、このイベントでアウトが1つ増える。
 export const OUT_EVENT_TYPES = new Set(['caught_stealing', 'runner_out_advancing']);
@@ -48,7 +52,9 @@ export function deriveInningState(atbats, events) {
   // この(inning, half)内のアウト数を、打席の結果とアウトイベントの両方から数える。
   const outsInHalf = timeline.filter((item) => {
     if (item.ref.inning !== inning || item.ref.half !== half) return false;
-    return item.kind === 'atbat' ? OUT_RESULTS.has(item.ref.result) : OUT_EVENT_TYPES.has(item.ref.type);
+    if (item.kind !== 'atbat') return OUT_EVENT_TYPES.has(item.ref.type);
+    if (item.ref.result === 'fielders_choice' && item.ref.batter_id !== 'opponent') return false;
+    return OUT_RESULTS.has(item.ref.result);
   }).length;
 
   if (outsInHalf >= 3) {

@@ -88,9 +88,12 @@ $$;
 grant execute on function set_track_pitching(text, uuid, boolean) to anon, authenticated;
 
 
--- 既存DBに古い17引数版(生還ランナー一括マーク追加前)が残っている場合に備えて明示的に削除する。
+-- 既存DBに古い17引数版・18引数版(走者アウト一括マーク追加前)が残っている場合に備えて明示的に削除する。
 drop function if exists submit_atbat(
   text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text
+);
+drop function if exists submit_atbat(
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[]
 );
 
 create or replace function submit_atbat(
@@ -111,7 +114,8 @@ create or replace function submit_atbat(
   p_pitcher_id text,
   p_opponent_batter_name text,
   p_entered_by text,
-  p_scored_runner_ids bigint[] default '{}'
+  p_scored_runner_ids bigint[] default '{}',
+  p_out_runner_ids bigint[] default '{}'
 )
 returns live_atbats
 language plpgsql
@@ -120,6 +124,9 @@ set search_path = public, pg_temp
 as $$
 declare
   v_row live_atbats;
+  v_out_runner_id bigint;
+  v_out_batter_id text;
+  v_is_new boolean;
 begin
   perform _check_access(p_game_id, p_access_token);
 
@@ -143,15 +150,37 @@ begin
   on conflict (game_id, client_uuid) do nothing
   returning * into v_row;
 
+  v_is_new := v_row.id is not null;
+
   if v_row.id is null then
     select * into v_row from live_atbats where game_id = p_game_id and client_uuid = p_client_uuid;
   end if;
 
-  -- 同じ打席の中で生還した既存走者(1人以上)を一括でscored済みにする
-  -- (例: A選手のヒットでB選手がホームインした場合、B選手の元の打席行をここで更新する)。
-  if array_length(p_scored_runner_ids, 1) > 0 then
+  -- 生還マーク・走者アウトイベントの追加は、この打席が今回初めて挿入された場合のみ行う
+  -- (client_uuidによる再送時に同じ副作用を二重に適用してしまうのを防ぐため)。
+  if v_is_new and array_length(p_scored_runner_ids, 1) > 0 then
     update live_atbats set scored = true
     where game_id = p_game_id and id = any(p_scored_runner_ids) and deleted_at is null;
+  end if;
+
+  -- この打席と同一プレーでアウトになった既存走者を、走塁死イベントと同じ形でlive_eventsに記録する
+  -- (例: 三塁走者がホームで刺されたフィルダースチョイス)。既存の「走塁死」クイックイベントと
+  -- 同じtype='runner_out_advancing'を使うことで、アウトカウント・走者一覧の除去ロジックを共用する。
+  if v_is_new and array_length(p_out_runner_ids, 1) > 0 then
+    foreach v_out_runner_id in array p_out_runner_ids
+    loop
+      select batter_id into v_out_batter_id from live_atbats
+      where game_id = p_game_id and id = v_out_runner_id and deleted_at is null;
+
+      if v_out_batter_id is not null then
+        insert into live_events (
+          game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by
+        ) values (
+          p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_out_advancing',
+          v_out_batter_id, null, null, p_entered_by
+        );
+      end if;
+    end loop;
   end if;
 
   return v_row;
@@ -159,7 +188,7 @@ end;
 $$;
 
 grant execute on function submit_atbat(
-  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[]
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[], bigint[]
 ) to anon, authenticated;
 
 

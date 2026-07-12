@@ -52,8 +52,13 @@
         <input type="text" id="batter-other-input" />
       </label>
       <div id="runners-scored-box" class="hidden">
-        <p class="field-hint">この打席で生還した他の走者(複数選択可)</p>
+        <p class="field-hint">この打席で他の走者に変化はありましたか?(生還・アウトを選択、複数可)</p>
         <div id="runners-scored-list"></div>
+      </div>
+      <div id="batter-fc-box" class="hidden">
+        <p class="field-hint">打者はどうなりましたか?</p>
+        <label><input type="radio" name="batter-fc" value="out" checked style="display:inline-block;width:auto;" /> アウト(併殺)</label>
+        <label><input type="radio" name="batter-fc" value="safe" style="display:inline-block;width:auto;" /> セーフ(野選、打点は付与されません)</label>
       </div>
     </div>
     <div id="defense-fields" class="hidden">
