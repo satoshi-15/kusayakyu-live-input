@@ -5,6 +5,9 @@ const addRowBtn = document.getElementById('add-lineup-row');
 const form = document.getElementById('new-game-form');
 const errorElm = document.getElementById('error-message');
 
+// scripts/field_maps/skytree_map.json の syubi_dropdown_options と揃える(先頭の"-"を除く)。
+const POSITIONS = ['投', '捕', '一', '二', '三', '遊', '左', '中', '右', 'DH'];
+
 let players = [];
 
 function addLineupRow(orderNo) {
@@ -12,10 +15,16 @@ function addLineupRow(orderNo) {
   row.className = 'lineup-row';
   row.innerHTML = `
     <label>${orderNo}番
-      <select data-order="${orderNo}">
+      <select data-role="batter" data-order="${orderNo}">
         <option value="">選手を選択</option>
         ${players.map((p) => `<option value="${p.id}">${p.display_name}</option>`).join('')}
         <option value="__other__">その他(自由入力)</option>
+      </select>
+    </label>
+    <label>守備位置
+      <select data-role="position" data-order="${orderNo}">
+        <option value="">選択</option>
+        ${POSITIONS.map((p) => `<option value="${p}">${p}</option>`).join('')}
       </select>
     </label>
   `;
@@ -29,7 +38,7 @@ async function init() {
     players = [];
   }
   for (let i = 1; i <= 9; i++) addLineupRow(i);
-  addRowBtn.addEventListener('click', () => addLineupRow(lineupRowsElm.children.length + 1));
+  addRowBtn.addEventListener('click', () => addLineupRow(lineupRowsElm.querySelectorAll('[data-role="batter"]').length + 1));
 }
 
 form.addEventListener('submit', async (ev) => {
@@ -41,8 +50,16 @@ form.addEventListener('submit', async (ev) => {
   const ourHalf = document.getElementById('our-half').value;
   const gameId = gameDate.replace(/-/g, '');
 
-  const lineup = [...lineupRowsElm.querySelectorAll('select')]
-    .map((sel) => ({ order_no: Number(sel.dataset.order), batter_id: sel.value }))
+  const batterSelects = [...lineupRowsElm.querySelectorAll('[data-role="batter"]')];
+  const lineup = batterSelects
+    .map((sel) => {
+      const positionSel = lineupRowsElm.querySelector(`[data-role="position"][data-order="${sel.dataset.order}"]`);
+      return {
+        order_no: Number(sel.dataset.order),
+        batter_id: sel.value,
+        position: positionSel.value || null,
+      };
+    })
     .filter((r) => r.batter_id && r.batter_id !== '__other__');
 
   try {

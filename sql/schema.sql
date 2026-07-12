@@ -68,7 +68,7 @@ create table if not exists live_events (
   client_uuid uuid not null,
   inning int not null,
   half text not null check (half in ('top', 'bottom')),
-  type text not null check (type in ('stolen_base', 'caught_stealing', 'wild_pitch', 'balk')),
+  type text not null check (type in ('stolen_base', 'caught_stealing', 'runner_out_advancing', 'wild_pitch', 'balk')),
   -- stolen_base/caught_stealingで必須(誰の盗塁かをbaserunning_events.jsonのrunner_idとして引き継ぐため)。
   runner_id text,
   pitcher_id text,

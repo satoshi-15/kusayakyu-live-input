@@ -18,6 +18,7 @@
   <div class="quick-events">
     <button type="button" class="btn-secondary" data-event="stolen_base">盗塁</button>
     <button type="button" class="btn-secondary" data-event="caught_stealing">盗塁死</button>
+    <button type="button" class="btn-secondary" data-event="runner_out_advancing">走塁死</button>
     <button type="button" class="btn-secondary" data-event="wild_pitch">暴投</button>
     <button type="button" class="btn-secondary" data-event="balk">ボーク</button>
   </div>
@@ -40,25 +41,8 @@
       </label>
     </div>
 
-    <label>結果
-      <select id="result-select">
-        <option value="groundout">ゴロアウト</option>
-        <option value="flyout">フライアウト</option>
-        <option value="strikeout">三振</option>
-        <option value="walk">四球</option>
-        <option value="hbp">死球</option>
-        <option value="single">単打</option>
-        <option value="double">二塁打</option>
-        <option value="triple">三塁打</option>
-        <option value="home_run">本塁打</option>
-        <option value="sac_bunt">犠打</option>
-        <option value="sac_fly">犠飛</option>
-        <option value="fielders_choice">野選(フィルダースチョイス)</option>
-        <option value="reached_on_error">失策で出塁</option>
-      </select>
-    </label>
-    <label>打球方向・詳細(任意)
-      <input type="text" id="detail-input" placeholder="例: サードゴロ、レフト前ヒット" />
+    <label>結果(打球方向まで選択)
+      <select id="result-select" required></select>
     </label>
     <label>打点
       <input type="number" id="rbi-input" min="0" max="4" value="0" />

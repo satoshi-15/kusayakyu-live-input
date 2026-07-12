@@ -2,6 +2,7 @@ import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
 import { derivePointer, pointerMatchesExpected, isAtBat } from './derive.js';
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge } from './render.js';
+import { RESULT_OPTIONS, findResultOption } from './result-options.js';
 
 function parseHash() {
   const hash = window.location.hash.replace(/^#/, '');
@@ -25,7 +26,6 @@ const els = {
   pitcherSelect: document.getElementById('pitcher-select'),
   opponentBatterName: document.getElementById('opponent-batter-name'),
   resultSelect: document.getElementById('result-select'),
-  detailInput: document.getElementById('detail-input'),
   rbiInput: document.getElementById('rbi-input'),
   scoredCheckbox: document.getElementById('scored-checkbox'),
   enteredByInput: document.getElementById('entered-by-input'),
@@ -78,11 +78,20 @@ function confirmModal(message) {
 function populateSelects() {
   const lineup = state.game.lineup || [];
   els.batterSelect.innerHTML = lineup
-    .map((r) => `<option value="${r.batter_id}">${r.order_no}番 ${state.playersById.get(r.batter_id)?.display_name || r.batter_id}</option>`)
+    .map((r) => `<option value="${r.batter_id}">${r.order_no}番 ${state.playersById.get(r.batter_id)?.display_name || r.batter_id}${r.position ? '(' + r.position + ')' : ''}</option>`)
     .join('') + '<option value="__other__">その他(自由入力)</option>';
 
   els.pitcherSelect.innerHTML = state.players
     .map((p) => `<option value="${p.id}">${p.display_name}</option>`)
+    .join('');
+
+  const groups = new Map();
+  for (const opt of RESULT_OPTIONS) {
+    if (!groups.has(opt.group)) groups.set(opt.group, []);
+    groups.get(opt.group).push(opt);
+  }
+  els.resultSelect.innerHTML = [...groups.entries()]
+    .map(([group, opts]) => `<optgroup label="${group}">${opts.map((o) => `<option value="${o.label}">${o.label}</option>`).join('')}</optgroup>`)
     .join('');
 }
 
@@ -100,7 +109,7 @@ function updateSubmitDisabled() {
 els.pitcherSelect.addEventListener('change', updateSubmitDisabled);
 
 function updatePointerAndForm() {
-  currentPointer = derivePointer(state.game, state.atbats);
+  currentPointer = derivePointer(state.game, state.atbats, state.events);
   els.pointerBox.classList.add('highlight');
   setTimeout(() => els.pointerBox.classList.remove('highlight'), 400);
   renderPointer(els.pointerBox, currentPointer, state.playersById);
@@ -142,14 +151,16 @@ async function handleDeleteAtbat(atbat, skipConfirm) {
 }
 
 async function handleEditAtbat(atbat) {
-  const newResult = prompt('新しい結果コードを入力(例: single, groundout, strikeout 等)', atbat.result);
-  if (!newResult) return;
+  const newLabel = prompt('新しい結果を入力(例: サードゴロ、レフト前ヒット、三振 等)', atbat.detail || '');
+  if (!newLabel) return;
+  const opt = findResultOption(newLabel);
+  if (!opt) { alert(`「${newLabel}」は選択肢にありません(結果セレクトと同じ表記で入力してください)`); return; }
   const ok = await confirmModal('この打席の内容を編集しますか?');
   if (!ok) return;
   await api.editAtbat(atbat.id, accessToken, {
     batterId: atbat.batter_id, orderNo: atbat.order_no, outsBefore: atbat.outs_before,
-    result: newResult, ab: isAtBat(newResult), hitType: atbat.hit_type, rbi: atbat.rbi,
-    scored: atbat.scored, detail: atbat.detail, pitcherId: atbat.pitcher_id,
+    result: opt.result, ab: isAtBat(opt.result), hitType: opt.hitType || null, rbi: atbat.rbi,
+    scored: atbat.scored, detail: opt.detail, pitcherId: atbat.pitcher_id,
     opponentBatterName: atbat.opponent_batter_name,
   });
 }
@@ -185,7 +196,7 @@ for (const btn of els.quickEventButtons) {
     if (!enteredBy) { alert('入力者名を入力してください'); return; }
     const type = btn.dataset.event;
     const needsPitcher = type === 'wild_pitch' || type === 'balk';
-    const needsRunner = type === 'stolen_base' || type === 'caught_stealing';
+    const needsRunner = type === 'stolen_base' || type === 'caught_stealing' || type === 'runner_out_advancing';
     const pitcherId = needsPitcher ? (els.pitcherSelect.value || currentPointer?.currentPitcherId) : null;
     if (needsPitcher && !pitcherId) { alert('投手を選択してください'); return; }
     let runnerId = null;
@@ -239,13 +250,15 @@ els.form.addEventListener('submit', async (ev) => {
   const enteredBy = els.enteredByInput.value.trim();
   if (!enteredBy) { alert('入力者名を入力してください'); return; }
 
-  if (!pointerMatchesExpected(currentPointer.lastAliveId, state.atbats)) {
+  if (!pointerMatchesExpected(currentPointer.lastAliveKey, state.atbats, state.events)) {
     alert('他の人が入力しました。最新の状況を確認してから、もう一度お願いします。');
     return;
   }
 
+  const opt = findResultOption(els.resultSelect.value);
+  if (!opt) { alert('結果を選択してください'); return; }
+
   const clientUuid = crypto.randomUUID();
-  const result = els.resultSelect.value;
   const batterId = isOffense
     ? (els.batterSelect.value === '__other__' ? els.batterOtherInput.value.trim() : els.batterSelect.value)
     : 'opponent';
@@ -257,12 +270,12 @@ els.form.addEventListener('submit', async (ev) => {
     batterId,
     orderNo: isOffense ? currentPointer.nextOrderNo : null,
     outsBefore: currentPointer.outs,
-    result,
-    ab: isAtBat(result),
-    hitType: ['single', 'double', 'triple', 'home_run'].includes(result) ? result : null,
+    result: opt.result,
+    ab: isAtBat(opt.result),
+    hitType: opt.hitType || null,
     rbi: Number(els.rbiInput.value) || 0,
     scored: els.scoredCheckbox.checked,
-    detail: els.detailInput.value.trim() || null,
+    detail: opt.detail,
     pitcherId: isOffense ? null : els.pitcherSelect.value,
     opponentBatterName: isOffense ? null : (els.opponentBatterName.value.trim() || null),
     enteredBy,
@@ -274,7 +287,6 @@ els.form.addEventListener('submit', async (ev) => {
 
   els.rbiInput.value = 0;
   els.scoredCheckbox.checked = false;
-  els.detailInput.value = '';
   els.opponentBatterName.value = '';
 });
 
