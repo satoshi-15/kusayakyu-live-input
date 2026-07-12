@@ -82,7 +82,16 @@ header.game-header {
 }
 #pointer-box.highlight { background-color: rgba(26,107,60,0.15); }
 .pointer-title { font-size: 1.2em; font-weight: bold; }
+.pointer-score { margin-top: 4px; font-size: 0.85em; opacity: 0.8; }
 .pointer-sub { margin-top: 4px; }
+
+#track-pitching-toggle { width: 100%; }
+#track-pitching-toggle.track-pitching-on { border-color: var(--accent); color: var(--accent); }
+#track-pitching-toggle.track-pitching-off { border-color: var(--warn); color: var(--warn); }
+
+#defense-simple { margin: 12px 0; }
+#defense-simple button { width: 100%; margin-top: 8px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; }
 

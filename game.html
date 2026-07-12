@@ -30,8 +30,10 @@
   </div>
 
   <div id="defense-simple" class="hidden">
-    <p>投手成績を記録しない設定です。相手の攻撃でアウトになるたびに押してください。</p>
-    <button type="button" id="simple-out-btn" class="btn-primary">アウト(守備)</button>
+    <p>投手成績を記録しない設定です。相手の攻撃の結果に応じて押してください。</p>
+    <label><input type="checkbox" id="simple-scored-checkbox" style="display:inline-block;width:auto;" /> このプレーで相手が得点した</label>
+    <button type="button" id="simple-out-btn" class="btn-primary">アウト</button>
+    <button type="button" id="simple-reach-btn" class="btn-secondary">出塁(四球・安打等)</button>
   </div>
 
   <form id="atbat-form">

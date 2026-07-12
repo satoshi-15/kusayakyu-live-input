@@ -1,6 +1,6 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
-import { derivePointer, pointerMatchesExpected, isAtBat } from './derive.js';
+import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore } from './derive.js';
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge } from './render.js';
 import { RESULT_OPTIONS, findResultOption } from './result-options.js';
 
@@ -44,6 +44,8 @@ const els = {
   trackPitchingToggle: document.getElementById('track-pitching-toggle'),
   defenseSimple: document.getElementById('defense-simple'),
   simpleOutBtn: document.getElementById('simple-out-btn'),
+  simpleReachBtn: document.getElementById('simple-reach-btn'),
+  simpleScoredCheckbox: document.getElementById('simple-scored-checkbox'),
 };
 
 if (!gameId || !accessToken) {
@@ -115,6 +117,8 @@ els.pitcherSelect.addEventListener('change', updateSubmitDisabled);
 function renderTrackPitchingToggle() {
   const on = state.game.track_pitching;
   els.trackPitchingToggle.textContent = `投手成績記録: ${on ? 'ON' : 'OFF'}`;
+  els.trackPitchingToggle.classList.toggle('track-pitching-on', on);
+  els.trackPitchingToggle.classList.toggle('track-pitching-off', !on);
   for (const btn of els.pitchingOnlyButtons) btn.classList.toggle('hidden', !on);
 }
 
@@ -122,7 +126,7 @@ function updatePointerAndForm() {
   currentPointer = derivePointer(state.game, state.atbats, state.events);
   els.pointerBox.classList.add('highlight');
   setTimeout(() => els.pointerBox.classList.remove('highlight'), 400);
-  renderPointer(els.pointerBox, currentPointer, state.playersById);
+  renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats));
   renderTrackPitchingToggle();
 
   if (state.game.status !== 'open') {
@@ -246,7 +250,7 @@ for (const btn of els.quickEventButtons) {
 }
 
 // --- 打席フォーム送信(自動リトライ+指数バックオフ) ---
-async function submitWithRetry(clientUuid, buildPayload) {
+async function submitWithRetry(clientUuid, buildPayload, onSettle) {
   state.pending.set(clientUuid, { status: 'sending', retries: 0 });
   renderPendingBadge(els.pendingBadge, state.pending);
 
@@ -255,16 +259,30 @@ async function submitWithRetry(clientUuid, buildPayload) {
       await api.submitAtbat(gameId, accessToken, buildPayload());
       state.pending.delete(clientUuid);
       renderPendingBadge(els.pendingBadge, state.pending);
+      onSettle?.();
     } catch (e) {
       if (retries < 3) {
         setTimeout(() => attempt(retries + 1), 1000 * 2 ** retries);
       } else {
         state.pending.set(clientUuid, { status: 'error', retries, retryFn: () => attempt(0) });
         renderPendingBadge(els.pendingBadge, state.pending);
+        onSettle?.();
       }
     }
   };
   attempt(0);
+}
+
+// 送信中の連打(二重記録)を防ぐ。対象ボタン群を無効化し、送信が確定(成功/リトライ尽き)したら戻す。
+function withDoubleTapGuard(buttons, fn) {
+  for (const b of buttons) b.disabled = true;
+  const release = () => { for (const b of buttons) b.disabled = false; };
+  try {
+    fn(release);
+  } catch (e) {
+    release();
+    throw e;
+  }
 }
 
 els.form.addEventListener('submit', async (ev) => {
@@ -304,9 +322,11 @@ els.form.addEventListener('submit', async (ev) => {
     enteredBy,
   };
 
-  lastSubmittedClientUuid = clientUuid;
-  lastSubmittedAt = Date.now();
-  submitWithRetry(clientUuid, () => payload);
+  withDoubleTapGuard([els.submitBtn], (release) => {
+    lastSubmittedClientUuid = clientUuid;
+    lastSubmittedAt = Date.now();
+    submitWithRetry(clientUuid, () => payload, release);
+  });
 
   els.rbiInput.value = 0;
   els.scoredCheckbox.checked = false;
@@ -314,6 +334,10 @@ els.form.addEventListener('submit', async (ev) => {
 });
 
 els.trackPitchingToggle.addEventListener('click', async () => {
+  const ok = await confirmModal(
+    `投手成績記録を${state.game.track_pitching ? 'OFF' : 'ON'}に切り替えますか?入力中のフォームがある場合、内容は失われます。`
+  );
+  if (!ok) return;
   try {
     await api.setTrackPitching(gameId, accessToken, !state.game.track_pitching);
   } catch (e) {
@@ -321,7 +345,9 @@ els.trackPitchingToggle.addEventListener('click', async () => {
   }
 });
 
-els.simpleOutBtn.addEventListener('click', () => {
+// resultは'groundout'(アウト)/'walk'(出塁)の固定値。投手成績OFF時は打球の種類を区別しない設計のため、
+// 「最近の入力」欄には常に「ゴロ」「四球」と表示される(実際の打球内容とは無関係)。
+function submitSimpleDefense(result, ab) {
   const enteredBy = els.enteredByInput.value.trim();
   if (!enteredBy) { alert('入力者名を入力してください'); return; }
   if (!pointerMatchesExpected(currentPointer.lastAliveKey, state.atbats, state.events)) {
@@ -329,6 +355,7 @@ els.simpleOutBtn.addEventListener('click', () => {
     return;
   }
   const clientUuid = crypto.randomUUID();
+  const scored = els.simpleScoredCheckbox.checked;
   const payload = {
     clientUuid,
     inning: currentPointer.inning,
@@ -336,20 +363,26 @@ els.simpleOutBtn.addEventListener('click', () => {
     batterId: 'opponent',
     orderNo: null,
     outsBefore: currentPointer.outs,
-    result: 'groundout',
-    ab: true,
+    result,
+    ab,
     hitType: null,
     rbi: 0,
-    scored: false,
+    scored,
     detail: null,
     pitcherId: null,
     opponentBatterName: null,
     enteredBy,
   };
-  lastSubmittedClientUuid = clientUuid;
-  lastSubmittedAt = Date.now();
-  submitWithRetry(clientUuid, () => payload);
-});
+  withDoubleTapGuard([els.simpleOutBtn, els.simpleReachBtn], (release) => {
+    lastSubmittedClientUuid = clientUuid;
+    lastSubmittedAt = Date.now();
+    submitWithRetry(clientUuid, () => payload, release);
+  });
+  els.simpleScoredCheckbox.checked = false;
+}
+
+els.simpleOutBtn.addEventListener('click', () => submitSimpleDefense('groundout', true));
+els.simpleReachBtn.addEventListener('click', () => submitSimpleDefense('walk', false));
 
 els.closeGameBtn.addEventListener('click', async () => {
   const ok = await confirmModal('試合を終了します。以降は入力できなくなります。よろしいですか?');

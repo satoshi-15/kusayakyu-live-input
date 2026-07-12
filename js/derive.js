@@ -93,6 +93,20 @@ export function derivePointer(game, atbats, events) {
   };
 }
 
+// 現在のスコア(自チーム・相手それぞれの生還数)を集計する。
+// 投手成績OFF中も相手の得点だけは把握できるようにするための軽量表示用(公式記録への登録は別途手動)。
+export function deriveScore(atbats) {
+  const alive = aliveAtbats(atbats);
+  let ours = 0;
+  let opponent = 0;
+  for (const a of alive) {
+    if (!a.scored) continue;
+    if (a.batter_id === 'opponent') opponent += 1;
+    else ours += 1;
+  }
+  return { ours, opponent };
+}
+
 // 送信前の楽観的整合性チェック: フォームを開いた時点のポインタと、実際の最新状態を突き合わせる。
 // 一致しなければ「他の人が入力した」とみなして送信をブロックする(UI/UXレビュー反映)。
 export function pointerMatchesExpected(expectedLastAliveKey, atbats, events) {

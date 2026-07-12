@@ -73,6 +73,10 @@ declare
 begin
   perform _check_access(p_game_id, p_access_token);
 
+  if not exists (select 1 from games where game_id = p_game_id and status = 'open') then
+    raise exception 'game % is not open', p_game_id;
+  end if;
+
   update games set track_pitching = p_value
   where game_id = p_game_id
   returning * into v_row;
@@ -115,6 +119,11 @@ begin
 
   if not exists (select 1 from games where game_id = p_game_id and status = 'open') then
     raise exception 'game % is not open', p_game_id;
+  end if;
+
+  if p_batter_id = 'opponent' and p_pitcher_id is null
+     and exists (select 1 from games where game_id = p_game_id and track_pitching) then
+    raise exception 'pitcher_id is required for opponent at-bats while track_pitching is on';
   end if;
 
   insert into live_atbats (
@@ -170,6 +179,11 @@ begin
     raise exception 'live_atbats id % not found', p_id;
   end if;
   perform _check_access(v_game_id, p_access_token);
+
+  if p_batter_id = 'opponent' and p_pitcher_id is null
+     and exists (select 1 from games where game_id = v_game_id and track_pitching) then
+    raise exception 'pitcher_id is required for opponent at-bats while track_pitching is on';
+  end if;
 
   update live_atbats set
     batter_id = p_batter_id,

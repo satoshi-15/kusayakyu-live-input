@@ -28,12 +28,19 @@ export function renderConnectionStatus(elm, status) {
   elm.className = info.cls;
 }
 
-export function renderPointer(elm, pointer, playersById) {
+export function renderPointer(elm, pointer, playersById, score) {
   clear(elm);
   const title = document.createElement('div');
   title.className = 'pointer-title';
   title.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト`;
   elm.appendChild(title);
+
+  if (score) {
+    const scoreLine = document.createElement('div');
+    scoreLine.className = 'pointer-score';
+    scoreLine.textContent = `自チーム ${score.ours} - ${score.opponent} 相手(参考、公式記録は別途手動確認)`;
+    elm.appendChild(scoreLine);
+  }
 
   const sub = document.createElement('div');
   sub.className = 'pointer-sub';
