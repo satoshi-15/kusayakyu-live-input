@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>草野球ライブ入力 - 新規試合</title>
+<link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+<main class="container">
+  <h1>新規試合を作成</h1>
+  <form id="new-game-form">
+    <label>対戦相手名<input type="text" id="opponent-name" required /></label>
+    <label>試合日<input type="date" id="game-date" required /></label>
+    <label>自チームの攻撃順
+      <select id="our-half" required>
+        <option value="top">先攻(表)</option>
+        <option value="bottom">後攻(裏)</option>
+      </select>
+    </label>
+
+    <h2>スターティングメンバー(打順)</h2>
+    <div id="lineup-rows"></div>
+    <button type="button" id="add-lineup-row" class="btn-secondary">+ 選手を追加</button>
+
+    <button type="submit" class="btn-primary">試合を作成して入力画面へ</button>
+  </form>
+  <p id="error-message" class="error"></p>
+</main>
+<script type="module" src="./js/index-app.js"></script>
+</body>
+</html>
