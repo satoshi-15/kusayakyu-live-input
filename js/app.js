@@ -238,28 +238,36 @@ function fcApplicable() {
   return !!els.runnersScoredList.querySelector('input[type="radio"][value="out"]:checked');
 }
 
-// 「セーフ(野選)」時はrules/集計ルール.md 5節により打点0固定とし、入力欄も編集不可にする。
+// FC(併殺・野選いずれも)はrules/集計ルール.md 5節により打点0固定とし、入力欄も編集不可にする
+// (併殺で打者もアウトになる場合・野選で打者がセーフになる場合のどちらも同じく打点無し)。
 function syncBatterFcState() {
   const applicable = fcApplicable();
   els.batterFcBox.classList.toggle('hidden', !applicable);
+  els.rbiInput.disabled = applicable;
   if (!applicable) {
-    els.rbiInput.disabled = false;
     const outRadio = els.batterFcBox.querySelector('input[value="out"]');
     if (outRadio) outRadio.checked = true;
     return;
   }
-  const safe = els.batterFcBox.querySelector('input[name="batter-fc"]:checked')?.value === 'safe';
-  els.rbiInput.disabled = safe;
-  if (safe) els.rbiInput.value = 0;
+  els.rbiInput.value = 0;
 }
+
+// 打点を自動計上しない結果(常に0固定): エラーで出塁(相手の失策では打点を付与しない)、
+// 野選(直接選択された場合。groundout+FCボックス経由の場合はsyncBatterFcStateのdisabledで別途0固定済み)、
+// 三振・振り逃げ(打者が打撃で走者を還したわけではないため、同時に走者が生還してもRBIは付かない)。
+const NO_RBI_RESULTS = new Set(['reached_on_error', 'fielders_choice', 'strikeout', 'strikeout_reached']);
 
 // 生還にチェックが入った走者の数(+本塁打で打者自身が生還した場合の1点)を打点のデフォルト値
 // として反映する。あくまでデフォルトであり、送信ボタンを押すまで人間が手動で上書きできる。
-// FC-safe(野選)で打点0固定の場合は何もしない(syncBatterFcStateの判断を尊重する)。
+// FC(併殺/野選)で打点0固定の場合は何もしない(syncBatterFcStateの判断を尊重する)。
 function updateRbiDefault() {
   if (els.rbiInput.disabled) return;
-  const scoredCount = els.runnersScoredList.querySelectorAll('input[type="radio"][value="scored"]:checked').length;
   const opt = findResultOption(els.resultSelect.value);
+  if (opt && NO_RBI_RESULTS.has(opt.result)) {
+    els.rbiInput.value = 0;
+    return;
+  }
+  const scoredCount = els.runnersScoredList.querySelectorAll('input[type="radio"][value="scored"]:checked').length;
   const batterOwnRbi = (opt?.result === 'home_run' && els.scoredCheckbox.checked) ? 1 : 0;
   els.rbiInput.value = scoredCount + batterOwnRbi;
 }
