@@ -326,7 +326,11 @@ function renderTrackPitchingToggle() {
   els.trackPitchingToggle.textContent = `投手成績記録: ${on ? 'ON' : 'OFF'}`;
   els.trackPitchingToggle.classList.toggle('track-pitching-on', on);
   els.trackPitchingToggle.classList.toggle('track-pitching-off', !on);
-  for (const btn of els.pitchingOnlyButtons) btn.classList.toggle('hidden', !on);
+  // 暴投・ボーク・パスボールは自チームが攻撃中なら相手投手のミスで自チームの走者が動くだけなので、
+  // 投手成績記録の設定に関わらず常に使える(pitcher_idは自チーム投手なので不要=nullで送信)。
+  // 隠すのは「投手成績記録OFF、かつ自チームが守備中(責任投手を選べない)」の場合のみ。
+  const hidePitchingOnly = !on && currentPointer?.side === 'defense';
+  for (const btn of els.pitchingOnlyButtons) btn.classList.toggle('hidden', hidePitchingOnly);
 }
 
 function updatePointerAndForm() {
@@ -433,7 +437,10 @@ for (const btn of els.quickEventButtons) {
     const enteredBy = els.enteredByInput.value.trim();
     if (!enteredBy) { alert('入力者名を入力してください'); return; }
     const type = btn.dataset.event;
-    const needsPitcher = type === 'wild_pitch' || type === 'balk' || type === 'passed_ball';
+    // 暴投・ボーク・パスボールは自チームが守備中(=自チーム投手が原因)の場合のみ責任投手の選択を必須にする。
+    // 攻撃中(相手投手が原因)は自チームにpitcher_idを持つ投手がいないため選択させず、nullで送信する。
+    const needsPitcher = (type === 'wild_pitch' || type === 'balk' || type === 'passed_ball')
+      && currentPointer?.side === 'defense';
     const needsRunner = type === 'stolen_base' || type === 'caught_stealing' || type === 'runner_out_advancing';
     const needsForcedAdvance = type === 'wild_pitch' || type === 'balk' || type === 'passed_ball';
     const pitcherId = needsPitcher ? (els.pitcherSelect.value || currentPointer?.currentPitcherId) : null;
