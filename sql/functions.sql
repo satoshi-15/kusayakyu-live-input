@@ -348,8 +348,15 @@ $$;
 grant execute on function soft_delete_atbat(bigint, uuid, text) to anon, authenticated;
 
 
+-- 既存DBに古い3引数版(client_uuidチェック追加前)が残っている場合に備えて明示的に削除する。
+drop function if exists undo_last_atbat(text, uuid, text);
+
 -- 直前1件のワンタップ取消(モーダル無し)用。非削除の中で最新のidを1件取り消す。
-create or replace function undo_last_atbat(p_game_id text, p_access_token uuid, p_deleted_by text)
+-- p_client_uuidを渡した場合、対象行のclient_uuidと一致しない(=自分の直前の打席ではない、
+-- 他の人が新しい打席を入力した)場合は削除せず例外を投げる。
+create or replace function undo_last_atbat(
+  p_game_id text, p_access_token uuid, p_deleted_by text, p_client_uuid uuid default null
+)
 returns live_atbats
 language plpgsql
 security definer
@@ -357,16 +364,33 @@ set search_path = public, pg_temp
 as $$
 declare
   v_target_id bigint;
+  v_target_client_uuid uuid;
   v_row live_atbats;
 begin
   perform _check_access(p_game_id, p_access_token);
 
-  select id into v_target_id from live_atbats
+  select id, client_uuid into v_target_id, v_target_client_uuid from live_atbats
   where game_id = p_game_id and deleted_at is null
   order by id desc limit 1;
 
   if v_target_id is null then
     return null;
+  end if;
+
+  if p_client_uuid is not null and v_target_client_uuid <> p_client_uuid then
+    raise exception 'この試合の最新の打席は他の人が入力したものです(取り消し対象が一致しません)'
+      using errcode = 'P0001';
+  end if;
+
+  -- この打席を起点とする走者イベント(盗塁死・進塁等)が既に記録されている場合、
+  -- 打席だけを消すとイベント側のrunner_atbat_idが孤立し(derive.jsが静かに無視する)、
+  -- 記録した走者の動きが跡形もなく消えてしまう。安全のため削除せず例外にする。
+  if exists (
+    select 1 from live_events
+    where runner_atbat_id = v_target_id and deleted_at is null
+  ) then
+    raise exception 'この打席に関連する走者イベントが記録されているため取り消せません。個別の取消ボタンを使ってください'
+      using errcode = 'P0001';
   end if;
 
   update live_atbats set deleted_at = now(), deleted_by = p_deleted_by
@@ -377,7 +401,7 @@ begin
 end;
 $$;
 
-grant execute on function undo_last_atbat(text, uuid, text) to anon, authenticated;
+grant execute on function undo_last_atbat(text, uuid, text, uuid) to anon, authenticated;
 
 
 -- 既存DBに古い10引数版(runner_atbat_id/to_base追加前)が残っている場合に備えて明示的に削除する。

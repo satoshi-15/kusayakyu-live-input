@@ -109,11 +109,12 @@ export async function softDeleteAtbat(id, accessToken, deletedBy) {
   return data;
 }
 
-export async function undoLastAtbat(gameId, accessToken, deletedBy) {
+export async function undoLastAtbat(gameId, accessToken, deletedBy, clientUuid) {
   const { data, error } = await supabase.rpc('undo_last_atbat', {
     p_game_id: gameId,
     p_access_token: accessToken,
     p_deleted_by: deletedBy,
+    p_client_uuid: clientUuid ?? null,
   });
   if (error) throw error;
   return data;

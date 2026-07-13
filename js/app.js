@@ -16,6 +16,13 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// idで検索し、あれば上書き・無ければ追加する(realtimeのfind-or-pushと、送信成功直後の
+// 楽観的ローカル反映の両方で使う共通ヘルパー)。
+function upsertLocal(list, row) {
+  const idx = list.findIndex((x) => x.id === row.id);
+  if (idx >= 0) list[idx] = row; else list.push(row);
+}
+
 function parseHash() {
   const hash = window.location.hash.replace(/^#/, '');
   const params = new URLSearchParams(hash);
@@ -39,6 +46,7 @@ const els = {
   runnersScoredBox: document.getElementById('runners-scored-box'),
   runnersScoredList: document.getElementById('runners-scored-list'),
   batterFcBox: document.getElementById('batter-fc-box'),
+  sacFlyBox: document.getElementById('sac-fly-box'),
   pitcherSelect: document.getElementById('pitcher-select'),
   opponentBatterName: document.getElementById('opponent-batter-name'),
   resultSelect: document.getElementById('result-select'),
@@ -215,10 +223,12 @@ els.batterSelect.addEventListener('change', () => {
   renderRunnersScoredCheckboxes();
 });
 
-// 打者の結果が「セカンドゴロ」等(groundout/flyout)で、かつ走者を「アウト」にした場合のみ、
+// 打者の結果が「セカンドゴロ」等(groundout)で、かつ走者を「アウト」にした場合のみ、
 // 「打者はどうなったか(併殺=打者もアウト / 野選=打者はセーフ)」を追加で確認する必要がある。
+// 捕球されたフライで打者がセーフになるケースは実在しないため、flyoutはFCの対象にしない
+// (捕球されたフライは常に打者アウトが確定しており、野手が「選ぶ」余地が無いため)。
 function isFcEligibleResult(result) {
-  return result === 'groundout' || result === 'flyout';
+  return result === 'groundout';
 }
 
 function fcApplicable() {
@@ -241,6 +251,40 @@ function syncBatterFcState() {
   const safe = els.batterFcBox.querySelector('input[name="batter-fc"]:checked')?.value === 'safe';
   els.rbiInput.disabled = safe;
   if (safe) els.rbiInput.value = 0;
+}
+
+// 生還にチェックが入った走者の数(+本塁打で打者自身が生還した場合の1点)を打点のデフォルト値
+// として反映する。あくまでデフォルトであり、送信ボタンを押すまで人間が手動で上書きできる。
+// FC-safe(野選)で打点0固定の場合は何もしない(syncBatterFcStateの判断を尊重する)。
+function updateRbiDefault() {
+  if (els.rbiInput.disabled) return;
+  const scoredCount = els.runnersScoredList.querySelectorAll('input[type="radio"][value="scored"]:checked').length;
+  const opt = findResultOption(els.resultSelect.value);
+  const batterOwnRbi = (opt?.result === 'home_run' && els.scoredCheckbox.checked) ? 1 : 0;
+  els.rbiInput.value = scoredCount + batterOwnRbi;
+}
+
+// 犠飛(0/1アウト・外野フライ・三塁走者が同じプレーで生還)かどうかを判定する。
+function sacFlyApplicable() {
+  if (!currentPointer || currentPointer.outs == null || currentPointer.outs >= 2) return false;
+  const opt = findResultOption(els.resultSelect.value);
+  if (!opt || opt.result !== 'flyout') return false;
+  const scoredAtbatIds = new Set(
+    [...els.runnersScoredList.querySelectorAll('input[type="radio"][value="scored"]:checked')]
+      .map((el) => Number(el.name.replace('runner-', '')))
+  );
+  if (scoredAtbatIds.size === 0) return false;
+  const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+  return runners.some((r) => r.base === 'third' && scoredAtbatIds.has(r.atbatId));
+}
+
+function syncSacFlyState() {
+  const applicable = sacFlyApplicable();
+  els.sacFlyBox.classList.toggle('hidden', !applicable);
+  if (!applicable) {
+    const yesRadio = els.sacFlyBox.querySelector('input[value="yes"]');
+    if (yesRadio) yesRadio.checked = true; // 次回表示時のためデフォルトに戻しておく
+  }
 }
 
 function runnerDisplayName(r) {
@@ -274,6 +318,7 @@ function renderRunnersScoredCheckboxes() {
   if (!currentPointer || currentPointer.side == null) {
     els.runnersScoredBox.classList.add('hidden');
     els.batterFcBox.classList.add('hidden');
+    els.sacFlyBox.classList.add('hidden');
     return;
   }
   const isOffense = currentPointer.side === 'offense';
@@ -305,10 +350,19 @@ function renderRunnersScoredCheckboxes() {
       </div>`;
   }).join('');
   syncBatterFcState();
+  syncSacFlyState();
+  updateRbiDefault();
 }
 
-els.runnersScoredList.addEventListener('change', syncBatterFcState);
-els.batterFcBox.addEventListener('change', syncBatterFcState);
+function syncRunnerDependentState() {
+  syncBatterFcState();
+  syncSacFlyState();
+  updateRbiDefault();
+}
+
+els.runnersScoredList.addEventListener('change', syncRunnerDependentState);
+els.batterFcBox.addEventListener('change', () => { syncBatterFcState(); updateRbiDefault(); });
+els.scoredCheckbox.addEventListener('change', updateRbiDefault);
 // 結果が変わるたびに走者一覧を再構築する(四球・死球での強制進塁デフォルトを再計算するため)。
 els.resultSelect.addEventListener('change', renderRunnersScoredCheckboxes);
 
@@ -427,99 +481,118 @@ els.pendingBadge.addEventListener('click', () => {
 
 els.undoBtn.addEventListener('click', async () => {
   const deletedBy = els.enteredByInput.value.trim() || '(不明)';
-  await api.undoLastAtbat(gameId, accessToken, deletedBy);
-  lastSubmittedClientUuid = null;
+  try {
+    await api.undoLastAtbat(gameId, accessToken, deletedBy, lastSubmittedClientUuid);
+    lastSubmittedClientUuid = null;
+  } catch (e) {
+    alert(`取り消しに失敗しました: ${e.message || e}`);
+  }
 });
 
 // --- クイックイベント ---
 for (const btn of els.quickEventButtons) {
-  btn.addEventListener('click', async () => {
+  btn.addEventListener('click', () => {
     const enteredBy = els.enteredByInput.value.trim();
     if (!enteredBy) { alert('入力者名を入力してください'); return; }
+    if (!pointerMatchesExpected(currentPointer.lastAliveKey, state.atbats, state.events)) {
+      alert('他の人が入力しました。最新の状況を確認してから、もう一度お願いします。');
+      return;
+    }
     const type = btn.dataset.event;
-    // 暴投・ボーク・パスボールは自チームが守備中(=自チーム投手が原因)の場合のみ責任投手の選択を必須にする。
-    // 攻撃中(相手投手が原因)は自チームにpitcher_idを持つ投手がいないため選択させず、nullで送信する。
-    const needsPitcher = (type === 'wild_pitch' || type === 'balk' || type === 'passed_ball')
-      && currentPointer?.side === 'defense';
-    const needsRunner = type === 'stolen_base' || type === 'caught_stealing' || type === 'runner_out_advancing';
-    const needsForcedAdvance = type === 'wild_pitch' || type === 'balk' || type === 'passed_ball';
-    const pitcherId = needsPitcher ? (els.pitcherSelect.value || currentPointer?.currentPitcherId) : null;
-    if (needsPitcher && !pitcherId) { alert('投手を選択してください'); return; }
-    let runnerId = null;
-    let runnerAtbatId = null;
-    let advanceMoves = [];
-    if (needsRunner) {
-      const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
-      let picked = null;
-      if (runners.length === 1) {
-        picked = runners[0];
-      } else if (runners.length > 1) {
-        picked = await selectRunnerModal(runners);
-        if (!picked) return;
-      } else {
-        // 走者一覧が空(データ不整合等)の場合は手入力にフォールバックする
-        const guess = els.batterSelect.value !== '__other__' ? els.batterSelect.value : '';
-        runnerId = prompt('走者(players.jsonのid)を入力してください', guess);
-        if (!runnerId) return;
-      }
-      if (picked) {
-        runnerId = picked.batterId === 'opponent' ? (picked.opponentBatterName || null) : picked.batterId;
-        runnerAtbatId = picked.atbatId;
-      }
-    }
-    if (needsForcedAdvance) {
-      const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
-      if (type === 'balk') {
-        // ボークは走者全員が確定で進塁するため、確認のみ(個別選択なし)。
-        advanceMoves = await confirmForcedAdvance(runners);
-      } else {
-        // 暴投・パスボールは走者ごとに結果が分かれうるため、個別に選択させる。
-        advanceMoves = runners.length === 0 ? [] : await selectAdvanceModal(runners);
-      }
-      if (advanceMoves === null) return; // キャンセル: 何も記録しない
-      if (runners.length > 0 && advanceMoves.length === 0) return; // 進塁した走者が誰もいなければ何も記録しない
-    }
-    try {
-      await api.submitEvent(gameId, accessToken, {
-        clientUuid: crypto.randomUUID(),
-        inning: currentPointer.inning,
-        half: currentPointer.half,
-        type,
-        runnerId,
-        runnerAtbatId,
-        pitcherId,
-        runnerNote: null,
-        enteredBy,
-      });
-      for (const move of advanceMoves) {
-        await api.submitEvent(gameId, accessToken, {
-          clientUuid: crypto.randomUUID(),
+
+    withDoubleTapGuard(els.quickEventButtons, async (release) => {
+      try {
+        // 暴投・ボーク・パスボールは自チームが守備中(=自チーム投手が原因)の場合のみ責任投手の選択を必須にする。
+        // 攻撃中(相手投手が原因)は自チームにpitcher_idを持つ投手がいないため選択させず、nullで送信する。
+        const needsPitcher = (type === 'wild_pitch' || type === 'balk' || type === 'passed_ball')
+          && currentPointer?.side === 'defense';
+        const needsRunner = type === 'stolen_base' || type === 'caught_stealing' || type === 'runner_out_advancing';
+        const needsForcedAdvance = type === 'wild_pitch' || type === 'balk' || type === 'passed_ball';
+        const pitcherId = needsPitcher ? (els.pitcherSelect.value || currentPointer?.currentPitcherId) : null;
+        if (needsPitcher && !pitcherId) { alert('投手を選択してください'); return; }
+        let runnerId = null;
+        let runnerAtbatId = null;
+        let advanceMoves = [];
+        if (needsRunner) {
+          const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+          let picked = null;
+          if (runners.length === 1) {
+            picked = runners[0];
+          } else if (runners.length > 1) {
+            picked = await selectRunnerModal(runners);
+            if (!picked) return;
+          } else {
+            // 走者一覧が空(データ不整合等)の場合は手入力にフォールバックする
+            const guess = els.batterSelect.value !== '__other__' ? els.batterSelect.value : '';
+            runnerId = prompt('走者(players.jsonのid)を入力してください', guess);
+            if (!runnerId) return;
+          }
+          if (picked) {
+            runnerId = picked.batterId === 'opponent' ? (picked.opponentBatterName || null) : picked.batterId;
+            runnerAtbatId = picked.atbatId;
+          }
+        }
+        if (needsForcedAdvance) {
+          const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+          if (type === 'balk') {
+            // ボークは走者全員が確定で進塁するため、確認のみ(個別選択なし)。
+            advanceMoves = await confirmForcedAdvance(runners);
+          } else {
+            // 暴投・パスボールは走者ごとに結果が分かれうるため、個別に選択させる。
+            advanceMoves = runners.length === 0 ? [] : await selectAdvanceModal(runners);
+          }
+          if (advanceMoves === null) return; // キャンセル: 何も記録しない
+          if (runners.length > 0 && advanceMoves.length === 0) return; // 進塁した走者が誰もいなければ何も記録しない
+        }
+
+        // 主イベント→進塁イベントの順に逐次送信する(created_atの前後関係を保つため並行送信はしない)。
+        await submitEventRetryable({
           inning: currentPointer.inning,
           half: currentPointer.half,
-          type: 'runner_advance',
-          runnerId: move.runnerId,
-          runnerAtbatId: move.atbatId,
-          toBase: move.toBase,
-          pitcherId: null,
+          type,
+          runnerId,
+          runnerAtbatId,
+          pitcherId,
           runnerNote: null,
           enteredBy,
         });
+        for (const move of advanceMoves) {
+          await submitEventRetryable({
+            inning: currentPointer.inning,
+            half: currentPointer.half,
+            type: 'runner_advance',
+            runnerId: move.runnerId,
+            runnerAtbatId: move.atbatId,
+            toBase: move.toBase,
+            pitcherId: null,
+            runnerNote: null,
+            enteredBy,
+          });
+        }
+      } finally {
+        release();
       }
-    } catch (e) {
-      alert(`記録に失敗しました: ${e.message || e}`);
-    }
+    });
   });
 }
 
-// --- 打席フォーム送信(自動リトライ+指数バックオフ) ---
-async function submitWithRetry(clientUuid, buildPayload, onSettle) {
+// --- 送信(自動リトライ+指数バックオフ) ---
+// submitFn: 実際にRPCを呼ぶ関数。onSuccess(row): 成功時のみ、返ってきた行でローカル状態を反映する
+// コールバック(Realtimeの到達を待たずに即座にstate.atbats/eventsへ反映し、次の送信での
+// pointerMatchesExpectedチェックが自分自身の直前の送信を正しく認識できるようにする)。
+// onSettle: 成功・リトライ尽き(恒久失敗)のどちらでも呼ばれる(二重タップガード解除用)。
+async function submitWithRetry(clientUuid, submitFn, onSuccess, onSettle) {
   state.pending.set(clientUuid, { status: 'sending', retries: 0 });
   renderPendingBadge(els.pendingBadge, state.pending);
 
   const attempt = async (retries) => {
     try {
-      await api.submitAtbat(gameId, accessToken, buildPayload());
+      const row = await submitFn();
       state.pending.delete(clientUuid);
+      if (row) {
+        onSuccess?.(row);
+        renderAll();
+      }
       renderPendingBadge(els.pendingBadge, state.pending);
       onSettle?.();
     } catch (e) {
@@ -533,6 +606,22 @@ async function submitWithRetry(clientUuid, buildPayload, onSettle) {
     }
   };
   attempt(0);
+}
+
+// クイックイベント用: submitWithRetryをPromiseでラップし、逐次awaitできるようにする
+// (created_atの前後関係がimport_from_supabase.pyのafter_seq算出の正本のため、複数イベントを
+// 送る場合も並行送信はせず1件ずつ確定させてから次を送る)。
+function submitEventRetryable(payloadWithoutUuid) {
+  return new Promise((resolve) => {
+    const clientUuid = crypto.randomUUID();
+    const payload = { ...payloadWithoutUuid, clientUuid };
+    submitWithRetry(
+      clientUuid,
+      () => api.submitEvent(gameId, accessToken, payload),
+      (row) => upsertLocal(state.events, row),
+      resolve
+    );
+  });
 }
 
 // 送信中の連打(二重記録)を防ぐ。対象ボタン群を無効化し、送信が確定(成功/リトライ尽き)したら戻す。
@@ -589,6 +678,16 @@ els.form.addEventListener('submit', async (ev) => {
       effectiveRbi = 0;
     }
   }
+  // 犠飛の確認ボックスが表示されており「はい」が選ばれていれば、表示上のdetail(打球方向)は
+  // 変えずにresultだけをsac_flyへ切り替える(打数に含めない。打点はupdateRbiDefaultで既に
+  // 生還数を反映済みのためそのまま使う)。isFcEligibleResultをgroundout限定にしたため
+  // batter-fc-boxとsac-fly-boxが同時に表示されることは無く、上書きが競合することはない。
+  if (!els.sacFlyBox.classList.contains('hidden')) {
+    const isSacFly = els.sacFlyBox.querySelector('input[name="sac-fly"]:checked')?.value === 'yes';
+    if (isSacFly) {
+      effectiveResult = 'sac_fly';
+    }
+  }
 
   const payload = {
     clientUuid,
@@ -614,7 +713,12 @@ els.form.addEventListener('submit', async (ev) => {
   withDoubleTapGuard([els.submitBtn], (release) => {
     lastSubmittedClientUuid = clientUuid;
     lastSubmittedAt = Date.now();
-    submitWithRetry(clientUuid, () => payload, release);
+    submitWithRetry(
+      clientUuid,
+      () => api.submitAtbat(gameId, accessToken, payload),
+      (row) => upsertLocal(state.atbats, row),
+      release
+    );
   });
 
   els.rbiInput.value = 0;
@@ -666,7 +770,12 @@ function submitSimpleDefense(result, ab) {
   withDoubleTapGuard([els.simpleOutBtn, els.simpleReachBtn], (release) => {
     lastSubmittedClientUuid = clientUuid;
     lastSubmittedAt = Date.now();
-    submitWithRetry(clientUuid, () => payload, release);
+    submitWithRetry(
+      clientUuid,
+      () => api.submitAtbat(gameId, accessToken, payload),
+      (row) => upsertLocal(state.atbats, row),
+      release
+    );
   });
   els.simpleScoredCheckbox.checked = false;
 }
@@ -775,25 +884,21 @@ async function init() {
     },
     onAtbatsChange: (payload) => {
       const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
-      const idx = state.atbats.findIndex((x) => x.id === row.id);
       if (payload.eventType === 'DELETE') {
+        const idx = state.atbats.findIndex((x) => x.id === row.id);
         if (idx >= 0) state.atbats.splice(idx, 1);
-      } else if (idx >= 0) {
-        state.atbats[idx] = payload.new;
       } else {
-        state.atbats.push(payload.new);
+        upsertLocal(state.atbats, payload.new);
       }
       renderAll();
     },
     onEventsChange: (payload) => {
       const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
-      const idx = state.events.findIndex((x) => x.id === row.id);
       if (payload.eventType === 'DELETE') {
+        const idx = state.events.findIndex((x) => x.id === row.id);
         if (idx >= 0) state.events.splice(idx, 1);
-      } else if (idx >= 0) {
-        state.events[idx] = payload.new;
       } else {
-        state.events.push(payload.new);
+        upsertLocal(state.events, payload.new);
       }
       renderAll();
     },

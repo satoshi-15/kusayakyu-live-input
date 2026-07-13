@@ -20,6 +20,9 @@
     <span id="connection-status">●</span>
   </header>
 
+  <div id="pointer-box"></div>
+  <div id="runners-box"></div>
+
   <button type="button" id="track-pitching-toggle" class="btn-secondary" style="margin:8px 0;">投手成績記録: -</button>
   <button type="button" id="lineup-edit-toggle-btn" class="btn-secondary" style="margin:8px 0;">オーダーを編集</button>
 
@@ -36,9 +39,6 @@
   <label>入力者名
     <input type="text" id="entered-by-input" placeholder="あなたの名前" />
   </label>
-
-  <div id="pointer-box"></div>
-  <div id="runners-box"></div>
 
   <div class="quick-events">
     <button type="button" class="btn-secondary" data-event="stolen_base">盗塁</button>
@@ -83,6 +83,11 @@
       <label><input type="radio" name="batter-fc" value="out" checked style="display:inline-block;width:auto;" /> アウト(併殺)</label>
       <label><input type="radio" name="batter-fc" value="safe" style="display:inline-block;width:auto;" /> セーフ(野選、打点は付与されません)</label>
     </div>
+    <div id="sac-fly-box" class="hidden">
+      <p class="field-hint">三塁走者の生還を伴う外野フライです。犠飛として記録しますか?</p>
+      <label><input type="radio" name="sac-fly" value="yes" checked style="display:inline-block;width:auto;" /> はい(犠飛、打数に含めない)</label>
+      <label><input type="radio" name="sac-fly" value="no" style="display:inline-block;width:auto;" /> いいえ(通常のフライアウト)</label>
+    </div>
 
     <label>結果(打球方向まで選択)
       <select id="result-select" required></select>
@@ -102,6 +107,7 @@
   <div id="recent-list"></div>
 
   <button type="button" id="close-game-btn" class="btn-danger" style="margin-top:24px;">試合終了</button>
+  <p class="app-version">v1.0.0</p>
 </main>
 
 <div id="modal-overlay" class="modal-overlay hidden">

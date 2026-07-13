@@ -56,6 +56,13 @@ button {
   min-height: 44px;
 }
 .btn-primary { background: var(--accent); color: white; width: 100%; margin-top: 16px; }
+#submit-btn {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.15);
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
 .btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--fg); }
 .btn-danger { background: var(--danger); color: white; }
 .btn-small { font-size: 0.85em; padding: 6px 10px; min-height: 32px; margin-left: 6px; }
@@ -92,10 +99,10 @@ header.game-header {
 }
 #pointer-box.highlight { background-color: rgba(26,107,60,0.15); }
 .pointer-title { font-size: 1.2em; font-weight: bold; }
-.pointer-score { margin-top: 4px; font-size: 0.85em; opacity: 0.8; }
+.pointer-score { margin-top: 4px; font-size: 0.85em; }
 .pointer-sub { margin-top: 4px; }
 
-.runners-line { margin: 4px 0 12px; font-size: 0.9em; opacity: 0.85; }
+.runners-line { margin: 4px 0 12px; font-size: 0.9em; }
 
 #track-pitching-toggle { width: 100%; }
 #track-pitching-toggle.track-pitching-on { border-color: var(--accent); color: var(--accent); }
@@ -123,7 +130,7 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; 
   border-bottom: 1px solid var(--border);
   font-size: 0.9em;
 }
-.recent-row-event { opacity: 0.8; }
+.recent-row-event { font-size: 0.85em; }
 
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.5);
@@ -139,7 +146,7 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; 
 
 .hidden { display: none !important; }
 
-.field-hint { font-size: 0.85em; opacity: 0.8; margin: 4px 0; }
+.field-hint { font-size: 0.85em; margin: 4px 0; }
 #runners-scored-box { margin: 8px 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
 .runner-row { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .runner-row:last-child { border-bottom: none; margin-bottom: 0; }
