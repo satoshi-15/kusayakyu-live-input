@@ -517,3 +517,36 @@ end;
 $$;
 
 grant execute on function close_game(text, uuid) to anon, authenticated;
+
+
+-- 検証用試合データの自動削除
+-- opponent_nameに「検証」を含む試合(games行)を作成から24時間後に削除する。
+-- games -> live_atbats/live_events は on delete cascade のため、games行の削除だけで連鎖削除される。
+create extension if not exists pg_cron with schema extensions;
+
+create or replace function delete_expired_verification_games()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  delete from games
+  where opponent_name ilike '%検証%'
+    and created_at < now() - interval '24 hours';
+end;
+$$;
+
+do $$
+begin
+  if exists (select 1 from cron.job where jobname = 'delete-verification-games-hourly') then
+    perform cron.unschedule('delete-verification-games-hourly');
+  end if;
+end;
+$$;
+
+select cron.schedule(
+  'delete-verification-games-hourly',
+  '0 * * * *',
+  $$select delete_expired_verification_games();$$
+);
