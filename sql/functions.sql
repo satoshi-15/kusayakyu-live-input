@@ -61,6 +61,33 @@ $$;
 grant execute on function create_game(text, text, date, text, jsonb, boolean) to anon, authenticated;
 
 
+-- 初期画面(index.html)から開催中の試合に事前のURL共有無しで入室できるようにするための一覧取得。
+-- access_tokenを含めて返す(game_secretsは直接SELECTさせず、この関数経由でのみ公開する)。
+-- 試合開始前にURLを都度配る手間をなくすためのもので、公開リポジトリ・チーム限定運用を前提に
+-- あえてtokenを一覧公開する(status='open'のみ。closed/archivedになれば一覧・入室リンクから消える)。
+create or replace function list_open_games()
+returns table (
+  game_id text,
+  opponent_name text,
+  game_date date,
+  our_half text,
+  created_at timestamptz,
+  access_token uuid
+)
+language sql
+security definer
+set search_path = public, pg_temp
+as $$
+  select g.game_id, g.opponent_name, g.game_date, g.our_half, g.created_at, s.access_token
+  from games g
+  join game_secrets s on s.game_id = g.game_id
+  where g.status = 'open'
+  order by g.created_at desc;
+$$;
+
+grant execute on function list_open_games() to anon, authenticated;
+
+
 -- 試合中いつでも投手成績記録のON/OFFを切り替える(実装計画フェーズ2のMVP要求の未実装分)。
 create or replace function set_track_pitching(p_game_id text, p_access_token uuid, p_value boolean)
 returns games

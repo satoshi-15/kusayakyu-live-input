@@ -158,6 +158,12 @@ export async function closeGame(gameId, accessToken) {
   return data;
 }
 
+export async function listOpenGames() {
+  const { data, error } = await supabase.rpc('list_open_games');
+  if (error) throw error;
+  return data;
+}
+
 export async function fetchPlayers() {
   const { data, error } = await supabase.from('players').select('*').order('id');
   if (error) throw error;

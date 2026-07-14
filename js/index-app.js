@@ -1,12 +1,40 @@
-import { createGame, fetchPlayers } from './api.js';
+import { createGame, fetchPlayers, listOpenGames } from './api.js';
 import { addLineupRow, collectLineup } from './lineup-editor.js';
 
 const lineupRowsElm = document.getElementById('lineup-rows');
 const addRowBtn = document.getElementById('add-lineup-row');
 const form = document.getElementById('new-game-form');
 const errorElm = document.getElementById('error-message');
+const openGamesBox = document.getElementById('open-games-box');
+const openGamesList = document.getElementById('open-games-list');
 
 let players = [];
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+async function renderOpenGames() {
+  let games = [];
+  try {
+    games = await listOpenGames();
+  } catch (e) {
+    games = [];
+  }
+  if (!games.length) {
+    openGamesBox.classList.add('hidden');
+    return;
+  }
+  openGamesList.innerHTML = games.map((g) => `
+    <div class="open-game-row">
+      <span>${escapeHtml(g.opponent_name || '(対戦相手未設定)')} <span class="field-hint">(${escapeHtml(g.game_date || '')})</span></span>
+      <a class="btn-primary open-game-join" href="./game.html#game=${encodeURIComponent(g.game_id)}&token=${encodeURIComponent(g.access_token)}">入室する</a>
+    </div>
+  `).join('');
+  openGamesBox.classList.remove('hidden');
+}
 
 async function init() {
   try {
@@ -19,6 +47,7 @@ async function init() {
     const nextOrder = lineupRowsElm.querySelectorAll('[data-role="batter"]').length + 1;
     addLineupRow(lineupRowsElm, nextOrder, players);
   });
+  renderOpenGames();
 }
 
 form.addEventListener('submit', async (ev) => {
