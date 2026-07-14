@@ -1,7 +1,7 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
 import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase } from './derive.js';
-import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderRunners, renderPresence } from './render.js';
+import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence } from './render.js';
 import { RESULT_OPTIONS, findResultOption } from './result-options.js';
 import { addLineupRow, collectLineup } from './lineup-editor.js';
 
@@ -60,7 +60,6 @@ const els = {
   connectionStatus: document.getElementById('connection-status'),
   presenceBadge: document.getElementById('presence-badge'),
   pointerBox: document.getElementById('pointer-box'),
-  runnersBox: document.getElementById('runners-box'),
   offenseFields: document.getElementById('offense-fields'),
   defenseFields: document.getElementById('defense-fields'),
   batterSelect: document.getElementById('batter-select'),
@@ -325,9 +324,16 @@ function runnerDisplayName(r) {
   return r.opponentBatterName || '相手打者';
 }
 
-const BASE_ORDER = { first: 1, second: 2, third: 3 };
-// 二塁打=2、三塁打=3、本塁打=4(全員生還)塁分、既存走者が進むと仮定するデフォルト値。
-const HIT_ADVANCE_BASES = { double: 2, triple: 3, home_run: 4 };
+// 二塁打・三塁打・本塁打時の既存走者の進塁デフォルト。三塁までは高確率で進めるが
+// 生還はクロスプレーになりうるため、二塁打+二塁走者のみ「三塁」を既定にする
+// (それ以外は現実的にほぼ確実に生還するため「生還」のまま。一塁走者+三塁打→生還は、
+// 打者走者と同じ距離を走り守備の送球も三塁側に向かうため二塁打の各セルより確度が高い)。
+// 得点・打点に直結するセルのみ安全側に倒す設計方針(野球専門家レビュー済み)。
+const HIT_ADVANCE_DEFAULT = {
+  double: { first: 'advance:third', second: 'advance:third', third: 'scored' },
+  triple: { first: 'scored', second: 'scored', third: 'scored' },
+  home_run: { first: 'scored', second: 'scored', third: 'scored' },
+};
 
 // 走者ごとのデフォルト選択値('advance:second'/'advance:third'/'scored')を返す。
 // 最終確定はスコアラーがボタンを押すまで行われず、あくまで初期選択のデフォルトに過ぎない。
@@ -352,19 +358,11 @@ function computeForcedDefaults(result, runners) {
     return forced;
   }
 
-  // 二塁打・三塁打・本塁打: 打球が実際に転がる長打のため、既存走者は一律その進塁数だけ
-  // 進むことをデフォルトの仮定とする(実際の守備・打球方向次第で変わりうるが、あくまで
-  // 上書き可能なデフォルト値)。
-  const advanceBases = HIT_ADVANCE_BASES[result];
-  if (advanceBases) {
+  const hitDefaults = HIT_ADVANCE_DEFAULT[result];
+  if (hitDefaults) {
     for (const r of runners) {
-      const newOrder = BASE_ORDER[r.base] + advanceBases;
-      if (newOrder >= 4) {
-        forced.set(r.atbatId, 'scored');
-      } else {
-        const targetBase = Object.keys(BASE_ORDER).find((b) => BASE_ORDER[b] === newOrder);
-        forced.set(r.atbatId, `advance:${targetBase}`);
-      }
+      const value = hitDefaults[r.base];
+      if (value) forced.set(r.atbatId, value);
     }
   }
   return forced;
@@ -454,7 +452,6 @@ function updatePointerAndForm() {
   const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
     .map((r) => ({ ...r, name: runnerDisplayName(r) }));
   renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats), runners);
-  renderRunners(els.runnersBox, runners);
   renderTrackPitchingToggle();
 
   if (state.game.status !== 'open') {
@@ -559,6 +556,7 @@ for (const btn of els.quickEventButtons) {
       return;
     }
     const type = btn.dataset.event;
+    scrollToTop();
 
     withDoubleTapGuard(els.quickEventButtons, async (release) => {
       try {
@@ -700,6 +698,15 @@ function submitEventRetryable(payloadWithoutUuid) {
   });
 }
 
+// 自分の送信操作の直後にだけ呼ぶ(renderAll/updatePointerAndFormには絶対に紐付けない)。
+// Realtimeで他端末からの更新でもrenderAllは呼ばれるため、そちら経由にすると他人の入力の
+// たびに全端末の画面が上に飛んでしまう。送信結果を待たずバリデーション通過時点で呼ぶことで、
+// 次の入力のためにランナー・スコア表示(pointer-box)が見える位置へ即座に誘導する。
+function scrollToTop() {
+  document.activeElement?.blur?.();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 // 送信中の連打(二重記録)を防ぐ。対象ボタン群を無効化し、送信が確定(成功/リトライ尽き)したら戻す。
 function withDoubleTapGuard(buttons, fn) {
   for (const b of buttons) b.disabled = true;
@@ -786,6 +793,7 @@ els.form.addEventListener('submit', async (ev) => {
     advancedRunnerMoves,
   };
 
+  scrollToTop();
   withDoubleTapGuard([els.submitBtn], (release) => {
     lastSubmittedClientUuid = clientUuid;
     lastSubmittedAt = Date.now();
@@ -840,6 +848,7 @@ function submitSimpleDefense(result, ab) {
     opponentBatterName: null,
     enteredBy,
   };
+  scrollToTop();
   withDoubleTapGuard([els.simpleOutBtn, els.simpleReachBtn], (release) => {
     lastSubmittedClientUuid = clientUuid;
     lastSubmittedAt = Date.now();

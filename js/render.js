@@ -13,6 +13,8 @@ const EVENT_LABELS = {
   runner_advance: '進塁', wild_pitch: '暴投', balk: 'ボーク', passed_ball: 'パスボール',
 };
 
+const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁', home: '本塁' };
+
 function clear(elm) {
   while (elm.firstChild) elm.removeChild(elm.firstChild);
 }
@@ -55,6 +57,13 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
   title.appendChild(titleText);
   elm.appendChild(title);
 
+  const runnersLine = document.createElement('div');
+  runnersLine.className = 'pointer-runners';
+  runnersLine.textContent = runners.length
+    ? 'ランナー: ' + runners.map((r) => `${BASE_LABELS[r.base] || r.base}${r.name}`).join(' / ')
+    : 'ランナーなし';
+  elm.appendChild(runnersLine);
+
   if (score) {
     const scoreLine = document.createElement('div');
     scoreLine.className = 'pointer-score';
@@ -72,20 +81,6 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
     sub.textContent = `守備中 / 投手: ${p}`;
   }
   elm.appendChild(sub);
-}
-
-const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁', home: '本塁' };
-
-// 現在の半イニングの走者一覧を軽量表示する(攻撃側・守備側どちらも)。
-export function renderRunners(elm, runners) {
-  clear(elm);
-  if (!runners.length) return;
-  const line = document.createElement('div');
-  line.className = 'runners-line';
-  line.textContent = 'ランナー: ' + runners
-    .map((r) => `${BASE_LABELS[r.base] || r.base}${r.name}`)
-    .join(' / ');
-  elm.appendChild(line);
 }
 
 export function renderRecentList(elm, atbats, events, playersById, handlers) {
