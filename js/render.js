@@ -32,6 +32,18 @@ export function renderConnectionStatus(elm, status) {
   elm.className = info.cls;
 }
 
+// アウトカウントの直後に付ける短い塁状況表記(「一塁」「一三塁」「満塁」「走者なし」等)。
+function formatBaseState(runners) {
+  const bases = new Set(runners.map((r) => r.base));
+  if (bases.size === 3) return '満塁';
+  if (bases.size === 0) return '走者なし';
+  const parts = [];
+  if (bases.has('first')) parts.push('一');
+  if (bases.has('second')) parts.push('二');
+  if (bases.has('third')) parts.push('三');
+  return parts.join('') + '塁';
+}
+
 function baseDiamondSvg(runners) {
   const occupied = new Set((runners || []).map((r) => r.base));
   const cls = (base) => `base base-${base}${occupied.has(base) ? ' occupied' : ''}`;
@@ -53,7 +65,7 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
   title.className = 'pointer-title';
   title.innerHTML = baseDiamondSvg(runners);
   const titleText = document.createElement('span');
-  titleText.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト`;
+  titleText.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト ${formatBaseState(runners)}`;
   title.appendChild(titleText);
   elm.appendChild(title);
 
@@ -67,8 +79,12 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
   if (score) {
     const scoreLine = document.createElement('div');
     scoreLine.className = 'pointer-score';
-    scoreLine.textContent = `自チーム ${score.ours} - ${score.opponent} 相手(参考、公式記録は別途手動確認)`;
+    scoreLine.textContent = `自チーム ${score.ours} - ${score.opponent} 相手`;
     elm.appendChild(scoreLine);
+    const scoreNote = document.createElement('div');
+    scoreNote.className = 'pointer-score-note';
+    scoreNote.textContent = '(参考、公式記録は別途手動確認)';
+    elm.appendChild(scoreNote);
   }
 
   const sub = document.createElement('div');

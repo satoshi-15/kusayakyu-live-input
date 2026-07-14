@@ -103,6 +103,7 @@ header.game-header {
 #pointer-box.pointer-defense { border-left-color: var(--warn); background-color: rgba(160,100,0,0.06); }
 .pointer-title { font-size: 1.2em; font-weight: bold; display: flex; align-items: center; gap: 10px; }
 .pointer-score { margin-top: 6px; font-size: 1.3em; font-weight: bold; }
+.pointer-score-note { font-size: 0.7em; opacity: 0.6; margin-top: 2px; }
 .pointer-sub { margin-top: 4px; }
 
 .base-diamond { flex: none; }
