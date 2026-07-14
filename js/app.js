@@ -324,16 +324,22 @@ function runnerDisplayName(r) {
   return r.opponentBatterName || '相手打者';
 }
 
-// 二塁打・三塁打・本塁打時の既存走者の進塁デフォルト。三塁までは高確率で進めるが
-// 生還はクロスプレーになりうるため、二塁打+二塁走者のみ「三塁」を既定にする
-// (それ以外は現実的にほぼ確実に生還するため「生還」のまま。一塁走者+三塁打→生還は、
-// 打者走者と同じ距離を走り守備の送球も三塁側に向かうため二塁打の各セルより確度が高い)。
-// 得点・打点に直結するセルのみ安全側に倒す設計方針(野球専門家レビュー済み)。
+// 三塁打・本塁打は常に全走者が生還する(打球が深く、走者間の衝突が発生しないため)。
 const HIT_ADVANCE_DEFAULT = {
-  double: { first: 'advance:third', second: 'advance:third', third: 'scored' },
   triple: { first: 'scored', second: 'scored', third: 'scored' },
   home_run: { first: 'scored', second: 'scored', third: 'scored' },
 };
+
+// 二塁打: 一塁走者は三塁までほぼ確実に進む。二塁走者は、一塁に後続走者がいなければ
+// 三塁止まりが妥当なデフォルトだが、一塁も埋まっている(後続の一塁走者も三塁を目指す)
+// 場合は三塁で衝突するため二塁走者は生還がデフォルトになる(塁が「詰まっている」場合は
+// 打数分確実に進む、という実運用フィードバックを反映)。三塁走者は常に生還。
+function doubleAdvanceDefault(base, occupied) {
+  if (base === 'first') return 'advance:third';
+  if (base === 'third') return 'scored';
+  if (base === 'second') return occupied.has('first') ? 'scored' : 'advance:third';
+  return null;
+}
 
 // 走者ごとのデフォルト選択値('advance:second'/'advance:third'/'scored')を返す。
 // 最終確定はスコアラーがボタンを押すまで行われず、あくまで初期選択のデフォルトに過ぎない。
@@ -354,6 +360,15 @@ function computeForcedDefaults(result, runners) {
       } else if (r.base === 'third' && occupied.has('first') && occupied.has('second')) {
         forced.set(r.atbatId, 'scored');
       }
+    }
+    return forced;
+  }
+
+  if (result === 'double') {
+    const occupied = new Set(runners.map((r) => r.base));
+    for (const r of runners) {
+      const value = doubleAdvanceDefault(r.base, occupied);
+      if (value) forced.set(r.atbatId, value);
     }
     return forced;
   }
