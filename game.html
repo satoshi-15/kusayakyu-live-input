@@ -19,6 +19,7 @@
     <span id="game-info">読み込み中...</span>
     <span id="connection-status">●</span>
   </header>
+  <div id="presence-badge" class="presence-badge hidden"></div>
 
   <div id="pointer-box"></div>
   <div id="runners-box"></div>
@@ -41,12 +42,16 @@
   </label>
 
   <div class="quick-events">
-    <button type="button" class="btn-secondary" data-event="stolen_base">盗塁</button>
-    <button type="button" class="btn-secondary" data-event="caught_stealing">盗塁死</button>
-    <button type="button" class="btn-secondary" data-event="runner_out_advancing">走塁死</button>
-    <button type="button" class="btn-secondary pitching-only" data-event="wild_pitch">暴投</button>
-    <button type="button" class="btn-secondary pitching-only" data-event="balk">ボーク</button>
-    <button type="button" class="btn-secondary pitching-only" data-event="passed_ball">パスボール</button>
+    <div class="quick-events-group">
+      <button type="button" class="btn-secondary" data-event="stolen_base">盗塁</button>
+      <button type="button" class="btn-secondary" data-event="caught_stealing">盗塁死</button>
+      <button type="button" class="btn-secondary" data-event="runner_out_advancing">走塁死</button>
+    </div>
+    <div class="quick-events-group">
+      <button type="button" class="btn-secondary pitching-only" data-event="wild_pitch">暴投</button>
+      <button type="button" class="btn-secondary pitching-only" data-event="balk">ボーク</button>
+      <button type="button" class="btn-secondary pitching-only" data-event="passed_ball">パスボール</button>
+    </div>
   </div>
 
   <div id="defense-simple" class="hidden">
@@ -107,7 +112,7 @@
   <div id="recent-list"></div>
 
   <button type="button" id="close-game-btn" class="btn-danger" style="margin-top:24px;">試合終了</button>
-  <p class="app-version">v1.0</p>
+  <p class="app-version">v1.1</p>
 </main>
 
 <div id="modal-overlay" class="modal-overlay hidden">

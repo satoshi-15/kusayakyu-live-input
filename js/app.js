@@ -1,7 +1,7 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
 import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase } from './derive.js';
-import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderRunners } from './render.js';
+import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderRunners, renderPresence } from './render.js';
 import { RESULT_OPTIONS, findResultOption } from './result-options.js';
 import { addLineupRow, collectLineup } from './lineup-editor.js';
 
@@ -33,9 +33,32 @@ const { gameId, token: tokenFromUrl } = parseHash();
 const accessToken = tokenFromUrl || (gameId ? localStorage.getItem(`kusayakyu:${gameId}:token`) : null);
 if (gameId && accessToken) localStorage.setItem(`kusayakyu:${gameId}:token`, accessToken);
 
+// オフラインキューの永続化: 送信中(sending)または送信失敗中(error)のリクエストをlocalStorageにも
+// 保持し、リロードしても再送を再開できるようにする(state.pendingはメモリのみのため消えてしまう)。
+// client_uuidによるベキ等リトライが既にあるため、実は成功済みのものを再送しても副作用は二重に
+// ならない(submit_atbat/submit_eventのon conflict do nothing + v_is_newガードで安全)。
+const QUEUE_KEY = `kusayakyu:${gameId}:queue`;
+
+function loadQueue() {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch (e) { return []; }
+}
+function saveQueue(queue) {
+  localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+}
+function addToQueue(kind, payload) {
+  const queue = loadQueue();
+  if (queue.some((q) => q.payload.clientUuid === payload.clientUuid)) return;
+  queue.push({ kind, payload });
+  saveQueue(queue);
+}
+function removeFromQueue(clientUuid) {
+  saveQueue(loadQueue().filter((q) => q.payload.clientUuid !== clientUuid));
+}
+
 const els = {
   gameInfo: document.getElementById('game-info'),
   connectionStatus: document.getElementById('connection-status'),
+  presenceBadge: document.getElementById('presence-badge'),
   pointerBox: document.getElementById('pointer-box'),
   runnersBox: document.getElementById('runners-box'),
   offenseFields: document.getElementById('offense-fields'),
@@ -96,10 +119,12 @@ const state = {
 let currentPointer = null;
 let lastSubmittedClientUuid = null;
 let lastSubmittedAt = 0;
+let realtimeHandle = null;
 
 els.enteredByInput.value = localStorage.getItem('kusayakyu:enteredBy') || '';
 els.enteredByInput.addEventListener('change', () => {
   localStorage.setItem('kusayakyu:enteredBy', els.enteredByInput.value);
+  realtimeHandle?.updatePresence({ enteredBy: els.enteredByInput.value.trim() || null });
 });
 
 function confirmModal(message) {
@@ -300,19 +325,46 @@ function runnerDisplayName(r) {
   return r.opponentBatterName || '相手打者';
 }
 
-// 四球・死球の場合、塁が埋まっていて押し出しになる走者の atbatId -> デフォルト選択値 を返す
-// ('advance:second'/'advance:third'/'scored')。最終確定はスコアラーがボタンを押すまで行われない。
+const BASE_ORDER = { first: 1, second: 2, third: 3 };
+// 二塁打=2、三塁打=3、本塁打=4(全員生還)塁分、既存走者が進むと仮定するデフォルト値。
+const HIT_ADVANCE_BASES = { double: 2, triple: 3, home_run: 4 };
+
+// 走者ごとのデフォルト選択値('advance:second'/'advance:third'/'scored')を返す。
+// 最終確定はスコアラーがボタンを押すまで行われず、あくまで初期選択のデフォルトに過ぎない。
 function computeForcedDefaults(result, runners) {
   const forced = new Map();
-  if (result !== 'walk' && result !== 'hbp') return forced;
-  const occupied = new Set(runners.map((r) => r.base));
-  for (const r of runners) {
-    if (r.base === 'first') {
-      forced.set(r.atbatId, 'advance:second');
-    } else if (r.base === 'second' && occupied.has('first')) {
-      forced.set(r.atbatId, 'advance:third');
-    } else if (r.base === 'third' && occupied.has('first') && occupied.has('second')) {
-      forced.set(r.atbatId, 'scored');
+
+  // 四球・死球・単打・エラー出塁: 打者が一塁を占有することで、そこに先客がいれば連鎖的に
+  // 押し出される(単打等でも「打者が一塁に生きる」こと自体は確定するため、四球と同じ
+  // 押し出しロジックがそのまま成り立つ)。野選(fielders_choice)は既存のbatter-fc-box/
+  // runnersScoredListの「アウト」選択で個別に扱うため、ここでは対象外にする。
+  if (result === 'walk' || result === 'hbp' || result === 'single' || result === 'reached_on_error') {
+    const occupied = new Set(runners.map((r) => r.base));
+    for (const r of runners) {
+      if (r.base === 'first') {
+        forced.set(r.atbatId, 'advance:second');
+      } else if (r.base === 'second' && occupied.has('first')) {
+        forced.set(r.atbatId, 'advance:third');
+      } else if (r.base === 'third' && occupied.has('first') && occupied.has('second')) {
+        forced.set(r.atbatId, 'scored');
+      }
+    }
+    return forced;
+  }
+
+  // 二塁打・三塁打・本塁打: 打球が実際に転がる長打のため、既存走者は一律その進塁数だけ
+  // 進むことをデフォルトの仮定とする(実際の守備・打球方向次第で変わりうるが、あくまで
+  // 上書き可能なデフォルト値)。
+  const advanceBases = HIT_ADVANCE_BASES[result];
+  if (advanceBases) {
+    for (const r of runners) {
+      const newOrder = BASE_ORDER[r.base] + advanceBases;
+      if (newOrder >= 4) {
+        forced.set(r.atbatId, 'scored');
+      } else {
+        const targetBase = Object.keys(BASE_ORDER).find((b) => BASE_ORDER[b] === newOrder);
+        forced.set(r.atbatId, `advance:${targetBase}`);
+      }
     }
   }
   return forced;
@@ -616,6 +668,27 @@ async function submitWithRetry(clientUuid, submitFn, onSuccess, onSettle) {
   attempt(0);
 }
 
+function submitFnFor(kind, payload) {
+  return kind === 'atbat'
+    ? () => api.submitAtbat(gameId, accessToken, payload)
+    : () => api.submitEvent(gameId, accessToken, payload);
+}
+function targetListFor(kind) {
+  return kind === 'atbat' ? state.atbats : state.events;
+}
+
+// オフラインキューに載せてから送信する(#9)。成功したらキューから外す。リトライが尽きて
+// 失敗表示のままリロードされても、init()側でキューを読み直して再送を再開する。
+function queuedSubmit(kind, payload, onSettle) {
+  addToQueue(kind, payload);
+  submitWithRetry(
+    payload.clientUuid,
+    submitFnFor(kind, payload),
+    (row) => { upsertLocal(targetListFor(kind), row); removeFromQueue(payload.clientUuid); },
+    onSettle
+  );
+}
+
 // クイックイベント用: submitWithRetryをPromiseでラップし、逐次awaitできるようにする
 // (created_atの前後関係がimport_from_supabase.pyのafter_seq算出の正本のため、複数イベントを
 // 送る場合も並行送信はせず1件ずつ確定させてから次を送る)。
@@ -623,12 +696,7 @@ function submitEventRetryable(payloadWithoutUuid) {
   return new Promise((resolve) => {
     const clientUuid = crypto.randomUUID();
     const payload = { ...payloadWithoutUuid, clientUuid };
-    submitWithRetry(
-      clientUuid,
-      () => api.submitEvent(gameId, accessToken, payload),
-      (row) => upsertLocal(state.events, row),
-      resolve
-    );
+    queuedSubmit('event', payload, resolve);
   });
 }
 
@@ -721,12 +789,9 @@ els.form.addEventListener('submit', async (ev) => {
   withDoubleTapGuard([els.submitBtn], (release) => {
     lastSubmittedClientUuid = clientUuid;
     lastSubmittedAt = Date.now();
-    submitWithRetry(
-      clientUuid,
-      () => api.submitAtbat(gameId, accessToken, payload),
-      (row) => upsertLocal(state.atbats, row),
-      release
-    );
+    const originalLabel = els.submitBtn.textContent;
+    els.submitBtn.textContent = '送信中...';
+    queuedSubmit('atbat', payload, () => { els.submitBtn.textContent = originalLabel; release(); });
   });
 
   els.rbiInput.value = 0;
@@ -778,12 +843,7 @@ function submitSimpleDefense(result, ab) {
   withDoubleTapGuard([els.simpleOutBtn, els.simpleReachBtn], (release) => {
     lastSubmittedClientUuid = clientUuid;
     lastSubmittedAt = Date.now();
-    submitWithRetry(
-      clientUuid,
-      () => api.submitAtbat(gameId, accessToken, payload),
-      (row) => upsertLocal(state.atbats, row),
-      release
-    );
+    queuedSubmit('atbat', payload, release);
   });
   els.simpleScoredCheckbox.checked = false;
 }
@@ -883,8 +943,16 @@ async function init() {
   populateSelects();
   renderAll();
 
-  subscribeToGame(gameId, {
+  // リロードで消えずに残っていた送信待ち・送信失敗中のリクエストを再送する(#9)。
+  // client_uuidが同じため、既に成功していたものを再送しても副作用は二重にならない。
+  for (const { kind, payload } of loadQueue()) {
+    queuedSubmit(kind, payload, () => {});
+  }
+
+  realtimeHandle = subscribeToGame(gameId, {
     onStatusChange: (status) => renderConnectionStatus(els.connectionStatus, status),
+    onPresenceChange: (names) => renderPresence(els.presenceBadge, names),
+    initialPresence: { enteredBy: els.enteredByInput.value.trim() || null },
     onRefetch: ({ atbats: a, events: e }) => {
       state.atbats = a;
       state.events = e;

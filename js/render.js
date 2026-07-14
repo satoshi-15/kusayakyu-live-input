@@ -30,12 +30,29 @@ export function renderConnectionStatus(elm, status) {
   elm.className = info.cls;
 }
 
+function baseDiamondSvg(runners) {
+  const occupied = new Set((runners || []).map((r) => r.base));
+  const cls = (base) => `base base-${base}${occupied.has(base) ? ' occupied' : ''}`;
+  return `
+    <svg class="base-diamond" viewBox="0 0 100 100" width="32" height="32">
+      <polygon points="50,12 88,50 50,88 12,50" fill="none" stroke="var(--border)" stroke-width="4" />
+      <circle class="${cls('second')}" cx="50" cy="12" r="13" />
+      <circle class="${cls('first')}" cx="88" cy="50" r="13" />
+      <circle class="${cls('third')}" cx="12" cy="50" r="13" />
+    </svg>`;
+}
+
 export function renderPointer(elm, pointer, playersById, score, runners) {
   clear(elm);
+  elm.classList.toggle('pointer-offense', pointer.side === 'offense');
+  elm.classList.toggle('pointer-defense', pointer.side === 'defense');
+
   const title = document.createElement('div');
   title.className = 'pointer-title';
-  const baseState = runners ? ` ${formatBaseState(runners)}` : '';
-  title.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト${baseState}`;
+  title.innerHTML = baseDiamondSvg(runners);
+  const titleText = document.createElement('span');
+  titleText.textContent = `${pointer.inning}回${pointer.half === 'top' ? '表' : '裏'} ${pointer.outs}アウト`;
+  title.appendChild(titleText);
   elm.appendChild(title);
 
   if (score) {
@@ -58,18 +75,6 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
 }
 
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁', home: '本塁' };
-
-// 走者一覧から「一・二塁」「満塁」「走者なし」のような塁状況の短い表記を作る。
-function formatBaseState(runners) {
-  const bases = new Set(runners.map((r) => r.base));
-  if (bases.size === 3) return '満塁';
-  if (bases.size === 0) return '走者なし';
-  const parts = [];
-  if (bases.has('first')) parts.push('一');
-  if (bases.has('second')) parts.push('二');
-  if (bases.has('third')) parts.push('三');
-  return parts.join('・') + '塁';
-}
 
 // 現在の半イニングの走者一覧を軽量表示する(攻撃側・守備側どちらも)。
 export function renderRunners(elm, runners) {
@@ -129,6 +134,18 @@ export function renderRecentList(elm, atbats, events, playersById, handlers) {
     row.appendChild(delBtn);
     elm.appendChild(row);
   }
+}
+
+// 現在この試合を開いている(入力フォームを表示している)人の名前一覧を表示する。
+// 名前未入力の参加者は数に含めない(表示しても誰か分からないため)。
+export function renderPresence(elm, names) {
+  const uniqueNames = [...new Set(names.filter(Boolean))];
+  if (uniqueNames.length === 0) {
+    elm.classList.add('hidden');
+    return;
+  }
+  elm.textContent = `入力中: ${uniqueNames.join(', ')}`;
+  elm.classList.remove('hidden');
 }
 
 export function renderPendingBadge(elm, pending) {
