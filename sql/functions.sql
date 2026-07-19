@@ -28,8 +28,10 @@ $$;
 revoke execute on function _check_access(text, uuid) from public, anon, authenticated;
 
 
--- 既存DBに古い5引数版(track_pitching追加前)が残っている場合に備えて明示的に削除する。
+-- 既存DBに古い5引数版(track_pitching追加前)・6引数版(game_type追加前)が残っている場合に備えて
+-- 明示的に削除する。
 drop function if exists create_game(text, text, date, text, jsonb);
+drop function if exists create_game(text, text, date, text, jsonb, boolean);
 
 create or replace function create_game(
   p_game_id text,
@@ -37,7 +39,8 @@ create or replace function create_game(
   p_game_date date,
   p_our_half text,
   p_lineup jsonb,
-  p_track_pitching boolean default true
+  p_track_pitching boolean default true,
+  p_game_type text default 'official'
 )
 returns uuid
 language plpgsql
@@ -47,9 +50,13 @@ as $$
 declare
   v_token uuid;
 begin
-  insert into games (game_id, opponent_name, game_date, our_half, lineup, track_pitching)
+  insert into games (game_id, opponent_name, game_date, our_half, lineup, track_pitching, game_type)
   values (p_game_id, p_opponent_name, p_game_date, p_our_half, coalesce(p_lineup, '[]'::jsonb),
-          coalesce(p_track_pitching, true));
+          coalesce(p_track_pitching, true), coalesce(p_game_type, 'official'));
+
+  -- 守備交代ログ(lineup_history)の起点として、試合開始時のスタメンも1行記録しておく。
+  insert into lineup_history (game_id, inning, half, lineup, changed_by)
+  values (p_game_id, null, null, coalesce(p_lineup, '[]'::jsonb), null);
 
   insert into game_secrets (game_id) values (p_game_id)
   returning access_token into v_token;
@@ -58,7 +65,7 @@ begin
 end;
 $$;
 
-grant execute on function create_game(text, text, date, text, jsonb, boolean) to anon, authenticated;
+grant execute on function create_game(text, text, date, text, jsonb, boolean, text) to anon, authenticated;
 
 
 -- 初期画面(index.html)から開催中の試合に事前のURL共有無しで入室できるようにするための一覧取得。
@@ -115,8 +122,21 @@ $$;
 grant execute on function set_track_pitching(text, uuid, boolean) to anon, authenticated;
 
 
+-- 既存DBに古い3引数版(交代ログ追加前)が残っている場合に備えて明示的に削除する。
+drop function if exists update_lineup(text, uuid, jsonb);
+
 -- 試合作成後にオーダー(打順・守備位置)の記載ミスに気づいた場合、試合中いつでも編集できるようにする。
-create or replace function update_lineup(p_game_id text, p_access_token uuid, p_lineup jsonb)
+-- 呼び出しのたびにlineup_historyへ変更後の全スナップショットを1行追加する(守備交代ログ)。
+-- p_inning/p_halfは呼び出し元(js/app.js)がcurrentPointerから渡す「その時点のイニング・表裏」
+-- (試合開始前の初期登録時はnullのままでよい)。
+create or replace function update_lineup(
+  p_game_id text,
+  p_access_token uuid,
+  p_lineup jsonb,
+  p_inning int default null,
+  p_half text default null,
+  p_changed_by text default null
+)
 returns games
 language plpgsql
 security definer
@@ -135,11 +155,14 @@ begin
   where game_id = p_game_id
   returning * into v_row;
 
+  insert into lineup_history (game_id, inning, half, lineup, changed_by)
+  values (p_game_id, p_inning, p_half, v_row.lineup, p_changed_by);
+
   return v_row;
 end;
 $$;
 
-grant execute on function update_lineup(text, uuid, jsonb) to anon, authenticated;
+grant execute on function update_lineup(text, uuid, jsonb, int, text, text) to anon, authenticated;
 
 
 -- 既存DBに古い17/18/19引数版(進塁記録追加前)が残っている場合に備えて明示的に削除する。
@@ -152,6 +175,117 @@ drop function if exists submit_atbat(
 drop function if exists submit_atbat(
   text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text, bigint[], bigint[]
 );
+drop function if exists submit_atbat(
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text,
+  bigint[], bigint[], jsonb
+);
+
+-- 打席(live_atbats)に付随する走者イベント(走塁死・進塁・打者走者自身の進塁)をlive_eventsへ
+-- 記録する共通ロジック。submit_atbat(新規打席)とedit_atbat_full(打席の編集)の両方から呼ぶ
+-- (編集時は同じロジックで作り直せるようにするため、打席作成時と共通化してある)。
+-- p_rowはこの打席の現在の行(挿入直後 or 更新直後)。挿入されたlive_eventsには
+-- caused_by_atbat_id = p_row.idを設定し、後から「この打席が原因のイベント」を特定できるようにする。
+-- 戻り値はp_row(打者走者自身がhomeまで進んだ場合のみscoredをtrueにして返す)。
+create or replace function _apply_atbat_consequences(
+  p_game_id text,
+  p_inning int,
+  p_half text,
+  p_pitcher_id text,
+  p_entered_by text,
+  p_row live_atbats,
+  p_out_runner_ids bigint[],
+  p_advanced_runner_moves jsonb,
+  p_batter_advance_to_base text
+)
+returns live_atbats
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_row live_atbats := p_row;
+  v_out_runner_id bigint;
+  v_out_batter_id text;
+  v_out_seq int := 0;
+  v_move jsonb;
+  v_move_atbat_id bigint;
+  v_move_batter_id text;
+begin
+  -- この打席と同一プレーでアウトになった既存走者を、走塁死イベントと同じ形でlive_eventsに記録する
+  -- (例: 三塁走者がホームで刺されたフィルダースチョイス)。pitcher_idはこの打席自身のp_pitcher_id
+  -- (相手打席=守備側でのみ非null)を引き継ぐ。created_atはv_row.created_atより後の時刻を明示的に
+  -- 指定する(同一トランザクション内ではnow()がトランザクション開始時刻を返すため、指定しないと
+  -- この打席の行と全く同じcreated_atになり、import_from_supabase.pyのafter_seq算出を誤らせる)。
+  if array_length(p_out_runner_ids, 1) > 0 then
+    foreach v_out_runner_id in array p_out_runner_ids
+    loop
+      select batter_id into v_out_batter_id from live_atbats
+      where game_id = p_game_id and id = v_out_runner_id and deleted_at is null;
+
+      if v_out_batter_id is not null then
+        v_out_seq := v_out_seq + 1;
+        insert into live_events (
+          game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, pitcher_id, runner_note,
+          entered_by, created_at, caused_by_atbat_id
+        ) values (
+          p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_out_advancing',
+          v_out_batter_id, v_out_runner_id, p_pitcher_id, null, p_entered_by,
+          v_row.created_at + (v_out_seq * interval '1 millisecond'), v_row.id
+        );
+      end if;
+    end loop;
+  end if;
+
+  -- 同じ打席の中で「進塁」を選択された既存走者を、盗塁と同じ仕組みで走者一覧のbaseに反映する
+  -- (例: 1塁走者が単打で3塁まで進んだ場合など)。p_advanced_runner_movesは
+  -- [{"atbat_id": 123, "to_base": "second"}, ...] 形式。
+  if jsonb_array_length(p_advanced_runner_moves) > 0 then
+    for v_move in select * from jsonb_array_elements(p_advanced_runner_moves)
+    loop
+      v_move_atbat_id := (v_move->>'atbat_id')::bigint;
+      select batter_id into v_move_batter_id from live_atbats
+      where game_id = p_game_id and id = v_move_atbat_id and deleted_at is null;
+
+      if v_move_batter_id is not null then
+        v_out_seq := v_out_seq + 1;
+        insert into live_events (
+          game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, to_base, pitcher_id,
+          runner_note, entered_by, created_at, caused_by_atbat_id
+        ) values (
+          p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_advance',
+          v_move_batter_id, v_move_atbat_id, v_move->>'to_base', null, null, p_entered_by,
+          v_row.created_at + (v_out_seq * interval '1 millisecond'), v_row.id
+        );
+      end if;
+    end loop;
+  end if;
+
+  -- 打者走者自身の進塁(エラー等でさらに先の塁まで進んだ場合)。runner_atbat_idにこの打席自身の
+  -- v_row.idを使うことで、既存のderiveRunnersOnBase(js/derive.js)がそのまま扱える。
+  -- to_base='home'の場合は打者自身がこの打席で生還したことになるため、scored列も直接trueに更新する。
+  if p_batter_advance_to_base is not null then
+    v_out_seq := v_out_seq + 1;
+    insert into live_events (
+      game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, to_base, pitcher_id,
+      runner_note, entered_by, created_at, caused_by_atbat_id
+    ) values (
+      p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_advance',
+      v_row.batter_id, v_row.id, p_batter_advance_to_base, null, null, p_entered_by,
+      v_row.created_at + (v_out_seq * interval '1 millisecond'), v_row.id
+    );
+
+    if p_batter_advance_to_base = 'home' then
+      update live_atbats set scored = true where id = v_row.id;
+      v_row.scored := true;
+    end if;
+  end if;
+
+  return v_row;
+end;
+$$;
+
+revoke execute on function _apply_atbat_consequences(text, int, text, text, text, live_atbats, bigint[], jsonb, text) from public, anon, authenticated;
+
 
 create or replace function submit_atbat(
   p_game_id text,
@@ -173,7 +307,10 @@ create or replace function submit_atbat(
   p_entered_by text,
   p_scored_runner_ids bigint[] default '{}',
   p_out_runner_ids bigint[] default '{}',
-  p_advanced_runner_moves jsonb default '[]'
+  p_advanced_runner_moves jsonb default '[]',
+  -- 打者走者自身がこの打席で(失策等により)追加で進んだ先の塁('second'/'third'/'home')。
+  -- 通常の出塁のみ(そのまま一塁等)ならnullのまま。
+  p_batter_advance_to_base text default null
 )
 returns live_atbats
 language plpgsql
@@ -182,13 +319,7 @@ set search_path = public, pg_temp
 as $$
 declare
   v_row live_atbats;
-  v_out_runner_id bigint;
-  v_out_batter_id text;
   v_is_new boolean;
-  v_out_seq int := 0;
-  v_move jsonb;
-  v_move_atbat_id bigint;
-  v_move_batter_id text;
 begin
   perform _check_access(p_game_id, p_access_token);
 
@@ -218,65 +349,18 @@ begin
     select * into v_row from live_atbats where game_id = p_game_id and client_uuid = p_client_uuid;
   end if;
 
-  -- 生還マーク・走者アウトイベントの追加は、この打席が今回初めて挿入された場合のみ行う
+  -- 生還マーク・付随イベントの追加は、この打席が今回初めて挿入された場合のみ行う
   -- (client_uuidによる再送時に同じ副作用を二重に適用してしまうのを防ぐため)。
   if v_is_new and array_length(p_scored_runner_ids, 1) > 0 then
     update live_atbats set scored = true
     where game_id = p_game_id and id = any(p_scored_runner_ids) and deleted_at is null;
   end if;
 
-  -- この打席と同一プレーでアウトになった既存走者を、走塁死イベントと同じ形でlive_eventsに記録する
-  -- (例: 三塁走者がホームで刺されたフィルダースチョイス)。既存の「走塁死」クイックイベントと
-  -- 同じtype='runner_out_advancing'を使うことで、アウトカウント・走者一覧の除去ロジックを共用する。
-  -- pitcher_idはこの打席自身のp_pitcher_id(相手打席=守備側でのみ非null)を引き継ぐ。これにより
-  -- aggregate.pyのaggregate_pitching()が野選での走者アウトも投手の奪アウト数に正しく計上できる
-  -- (fielders_choice自体はPITCHING_OUT_RESULTSから除外済みのため、ここが唯一のアウト計上経路)。
-  -- created_atは明示的にv_row.created_atより後の時刻を指定する: 同一トランザクション内では
-  -- now()がトランザクション開始時刻を返すため、何も指定しないとこの打席の行と全く同じ
-  -- created_atになってしまい、import_from_supabase.pyのafter_seq算出(created_at基準の前後判定)が
-  -- この打席をイベントより「後」と誤認識してしまう(該当プレー自体が無視される形になるバグ)。
-  if v_is_new and array_length(p_out_runner_ids, 1) > 0 then
-    foreach v_out_runner_id in array p_out_runner_ids
-    loop
-      select batter_id into v_out_batter_id from live_atbats
-      where game_id = p_game_id and id = v_out_runner_id and deleted_at is null;
-
-      if v_out_batter_id is not null then
-        v_out_seq := v_out_seq + 1;
-        insert into live_events (
-          game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, pitcher_id, runner_note,
-          entered_by, created_at
-        ) values (
-          p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_out_advancing',
-          v_out_batter_id, v_out_runner_id, p_pitcher_id, null, p_entered_by,
-          v_row.created_at + (v_out_seq * interval '1 millisecond')
-        );
-      end if;
-    end loop;
-  end if;
-
-  -- 同じ打席の中で「進塁」を選択された既存走者を、盗塁と同じ仕組みで走者一覧のbaseに反映する
-  -- (例: 1塁走者が単打で3塁まで進んだ場合など)。p_advanced_runner_movesは
-  -- [{"atbat_id": 123, "to_base": "second"}, ...] 形式。created_atの扱いはp_out_runner_idsと同じ。
-  if v_is_new and jsonb_array_length(p_advanced_runner_moves) > 0 then
-    for v_move in select * from jsonb_array_elements(p_advanced_runner_moves)
-    loop
-      v_move_atbat_id := (v_move->>'atbat_id')::bigint;
-      select batter_id into v_move_batter_id from live_atbats
-      where game_id = p_game_id and id = v_move_atbat_id and deleted_at is null;
-
-      if v_move_batter_id is not null then
-        v_out_seq := v_out_seq + 1;
-        insert into live_events (
-          game_id, client_uuid, inning, half, type, runner_id, runner_atbat_id, to_base, pitcher_id,
-          runner_note, entered_by, created_at
-        ) values (
-          p_game_id, gen_random_uuid(), p_inning, p_half, 'runner_advance',
-          v_move_batter_id, v_move_atbat_id, v_move->>'to_base', null, null, p_entered_by,
-          v_row.created_at + (v_out_seq * interval '1 millisecond')
-        );
-      end if;
-    end loop;
+  if v_is_new then
+    v_row := _apply_atbat_consequences(
+      p_game_id, p_inning, p_half, p_pitcher_id, p_entered_by, v_row,
+      p_out_runner_ids, p_advanced_runner_moves, p_batter_advance_to_base
+    );
   end if;
 
   return v_row;
@@ -285,13 +369,20 @@ $$;
 
 grant execute on function submit_atbat(
   text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text,
-  bigint[], bigint[], jsonb
+  bigint[], bigint[], jsonb, text
 ) to anon, authenticated;
 
 
-create or replace function edit_atbat(
+-- 既存DBに古い13引数版(edit_atbat、走者イベント編集非対応)が残っている場合に備えて明示的に削除する。
+drop function if exists edit_atbat(
+  bigint, uuid, text, int, int, text, boolean, text, int, boolean, text, text, text
+);
+
+-- 打席の編集(結果・打者・打点・生還・投手・相手打者名に加え、付随する走者イベントも作り直す)。
+create or replace function edit_atbat_full(
   p_id bigint,
   p_access_token uuid,
+  p_client_uuid uuid,
   p_batter_id text,
   p_order_no int,
   p_outs_before int,
@@ -302,7 +393,12 @@ create or replace function edit_atbat(
   p_scored boolean,
   p_detail text,
   p_pitcher_id text,
-  p_opponent_batter_name text
+  p_opponent_batter_name text,
+  p_entered_by text,
+  p_scored_runner_ids bigint[] default '{}',
+  p_out_runner_ids bigint[] default '{}',
+  p_advanced_runner_moves jsonb default '[]',
+  p_batter_advance_to_base text default null
 )
 returns live_atbats
 language plpgsql
@@ -312,16 +408,45 @@ as $$
 declare
   v_game_id text;
   v_row live_atbats;
+  v_will_stay_on_base boolean;
+  v_blocking_count int;
 begin
-  select game_id into v_game_id from live_atbats where id = p_id;
+  select game_id into v_game_id from live_atbats where id = p_id and deleted_at is null;
   if v_game_id is null then
     raise exception 'live_atbats id % not found', p_id;
   end if;
   perform _check_access(v_game_id, p_access_token);
 
+  select * into v_row from live_atbats where id = p_id;
+
+  -- 冪等性ガード: オフラインキュー・自動リトライによる同じ編集の再送では何もせず現在の行を返す
+  -- (submit_atbatのclient_uuid一意制約と同じ考え方。編集は取消→再作成を伴うため一意制約では
+  -- 表現できず、last_edit_client_uuid列との比較で明示的にガードする)。
+  if v_row.last_edit_client_uuid is not null and v_row.last_edit_client_uuid = p_client_uuid then
+    return v_row;
+  end if;
+
   if p_batter_id = 'opponent' and p_pitcher_id is null
      and exists (select 1 from games where game_id = v_game_id and track_pitching) then
     raise exception 'pitcher_id is required for opponent at-bats while track_pitching is on';
+  end if;
+
+  -- 編集後この打席が塁に残るかどうか(出塁する結果、かつ自分自身は生還していない)。
+  v_will_stay_on_base := p_result in
+    ('single', 'double', 'triple', 'home_run', 'walk', 'hbp', 'reached_on_error', 'fielders_choice', 'strikeout_reached')
+    and not p_scored;
+
+  -- 出塁しない結果に変わる場合、この打席をrunner_atbat_idとして参照する「他の打席が原因で作られた」
+  -- イベント(=この打席の走者に対する進塁・生還・アウトの記録)が既にあると参照が孤立するため拒否する
+  -- (undo_last_atbatが使っている安全策と同じ考え方)。
+  if not v_will_stay_on_base then
+    select count(*) into v_blocking_count from live_events
+    where runner_atbat_id = p_id and deleted_at is null
+      and (caused_by_atbat_id is null or caused_by_atbat_id <> p_id);
+    if v_blocking_count > 0 then
+      raise exception 'この打席の走者は後続の打席で進塁・生還・アウトが記録されているため、出塁しない結果には変更できません。関連する記録を先に取り消してください'
+        using errcode = 'P0001';
+    end if;
   end if;
 
   update live_atbats set
@@ -335,16 +460,32 @@ begin
     scored = p_scored,
     detail = p_detail,
     pitcher_id = p_pitcher_id,
-    opponent_batter_name = p_opponent_batter_name
-  where id = p_id and deleted_at is null
+    opponent_batter_name = p_opponent_batter_name,
+    last_edit_client_uuid = p_client_uuid
+  where id = p_id
   returning * into v_row;
+
+  -- この打席が原因で作られた旧付随イベントを取消してから、新しい選択内容で作り直す。
+  update live_events set deleted_at = now(), deleted_by = p_entered_by
+  where caused_by_atbat_id = p_id and deleted_at is null;
+
+  if array_length(p_scored_runner_ids, 1) > 0 then
+    update live_atbats set scored = true
+    where game_id = v_game_id and id = any(p_scored_runner_ids) and deleted_at is null;
+  end if;
+
+  v_row := _apply_atbat_consequences(
+    v_game_id, v_row.inning, v_row.half, p_pitcher_id, p_entered_by, v_row,
+    p_out_runner_ids, p_advanced_runner_moves, p_batter_advance_to_base
+  );
 
   return v_row;
 end;
 $$;
 
-grant execute on function edit_atbat(
-  bigint, uuid, text, int, int, text, boolean, text, int, boolean, text, text, text
+grant execute on function edit_atbat_full(
+  bigint, uuid, uuid, text, int, int, text, boolean, text, int, boolean, text, text, text, text,
+  bigint[], bigint[], jsonb, text
 ) to anon, authenticated;
 
 
@@ -544,6 +685,36 @@ end;
 $$;
 
 grant execute on function close_game(text, uuid) to anon, authenticated;
+
+
+-- 助っ人選手をその場で登録する(打者選択の「その他(自由入力)」から呼ばれる)。
+-- players書き込みはRLS方針上anon/authenticatedに直接権限が無いため、この関数経由のみ許可する。
+-- access_tokenによるゲーム単位の照合は行わない(選手マスタは全ゲーム共通のため)。
+create or replace function add_guest_player(p_id text, p_display_name text)
+returns players
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_row players;
+begin
+  if p_id is null or length(trim(p_id)) = 0 then
+    raise exception 'id is required';
+  end if;
+  if p_display_name is null or length(trim(p_display_name)) = 0 then
+    raise exception 'display_name is required';
+  end if;
+
+  insert into players (id, display_name, guest)
+  values (p_id, p_display_name, true)
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function add_guest_player(text, text) to anon, authenticated;
 
 
 -- 検証用試合データの自動削除

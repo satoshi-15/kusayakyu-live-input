@@ -148,6 +148,53 @@ export function deriveRunnersOnBase(game, atbats, events) {
   return [...onBase.values()];
 }
 
+// deriveRunnersOnBaseと同じロジックだが、「現在」ではなく指定した打席(targetAtbatId)が
+// 行われる直前の時点の走者状態を再現する(打席編集フォームで、その打席当時の走者一覧を
+// 表示するために使う)。deriveRunnersOnBaseがscored=trueの打席を無条件にスキップするのは
+// 「現在」の走者一覧としては正しいが、それだけでは「いつ生還したか」が分からないため、
+// ここではtargetAtbatId自身が現れる直前でタイムラインの走査を打ち切ることで対応する
+// (targetAtbatIdより後の情報は一切見ない)。
+export function deriveRunnersOnBaseBefore(game, atbats, events, targetAtbatId) {
+  const target = aliveAtbats(atbats).find((a) => a.id === targetAtbatId);
+  if (!target) return [];
+  const { inning, half } = target;
+
+  const onBase = new Map();
+  for (const item of mergeTimeline(atbats, events)) {
+    if (item.kind === 'atbat' && item.ref.id === targetAtbatId) break;
+    if (item.ref.inning !== inning || item.ref.half !== half) continue;
+
+    if (item.kind === 'atbat') {
+      const a = item.ref;
+      if (a.scored) continue;
+      const base = BASE_ON_HIT[a.result];
+      if (!base) continue;
+      onBase.set(a.id, {
+        atbatId: a.id, batterId: a.batter_id, orderNo: a.order_no, base,
+        opponentBatterName: a.batter_id === 'opponent' ? (a.opponent_batter_name || null) : null,
+      });
+    } else {
+      const e = item.ref;
+      if (e.runner_atbat_id == null) continue;
+      if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing') {
+        onBase.delete(e.runner_atbat_id);
+      } else if (e.type === 'stolen_base') {
+        const r = onBase.get(e.runner_atbat_id);
+        if (r && NEXT_BASE[r.base]) r.base = NEXT_BASE[r.base];
+      } else if (e.type === 'runner_advance') {
+        if (e.to_base === 'home') {
+          onBase.delete(e.runner_atbat_id);
+        } else {
+          const r = onBase.get(e.runner_atbat_id);
+          if (r && e.to_base) r.base = e.to_base;
+        }
+      }
+    }
+  }
+
+  return [...onBase.values()];
+}
+
 // 現在のスコア(自チーム・相手それぞれの生還数)を集計する。
 // 投手成績OFF中も相手の得点だけは把握できるようにするための軽量表示用(公式記録への登録は別途手動)。
 export function deriveScore(atbats) {

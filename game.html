@@ -60,14 +60,19 @@
     <button type="button" id="simple-reach-btn" class="btn-secondary">出塁(四球・安打等)</button>
   </div>
 
+  <div id="edit-mode-banner" class="hidden">
+    <p class="field-hint"><strong>打席を編集中</strong>(この打席の内容を修正します)</p>
+    <button type="button" id="edit-mode-cancel-btn" class="btn-secondary">編集をキャンセル</button>
+  </div>
   <form id="atbat-form">
     <div id="offense-fields">
       <label>打者
         <select id="batter-select"></select>
       </label>
-      <label id="batter-other-label" class="hidden">打者(自由入力、players.jsonのid。例: minamihara)
-        <input type="text" id="batter-other-input" />
-      </label>
+      <div id="batter-other-label" class="hidden guest-register-box">
+        <input type="text" id="batter-other-input" placeholder="表示名(例: 大倉)" />
+        <button type="button" id="batter-other-register-btn" class="btn-small">登録して選択</button>
+      </div>
     </div>
     <div id="defense-fields" class="hidden">
       <label>投手(交代した場合はここで変更)
@@ -78,6 +83,15 @@
       </label>
     </div>
 
+    <details id="batter-advance-box" class="hidden">
+      <summary class="field-hint">打者走者自身の進塁(エラー等で追加の進塁があった場合はここを開く)</summary>
+      <div id="batter-advance-options">
+        <label><input type="radio" name="batter-advance" value="none" checked style="display:inline-block;width:auto;" /> そのまま</label>
+        <label><input type="radio" name="batter-advance" value="second" style="display:inline-block;width:auto;" /> 二塁へ</label>
+        <label><input type="radio" name="batter-advance" value="third" style="display:inline-block;width:auto;" /> 三塁へ</label>
+        <label><input type="radio" name="batter-advance" value="home" style="display:inline-block;width:auto;" /> 生還</label>
+      </div>
+    </details>
     <div id="runners-scored-box" class="hidden">
       <p class="field-hint">この打席で他の走者に変化はありましたか?(生還・進塁・アウトを選択、複数可)</p>
       <div id="runners-scored-list"></div>
@@ -99,7 +113,7 @@
     <label>打点
       <input type="number" id="rbi-input" min="0" max="4" value="0" />
     </label>
-    <label><input type="checkbox" id="scored-checkbox" style="display:inline-block;width:auto;" /> 生還した</label>
+    <label><input type="checkbox" id="scored-checkbox" style="display:inline-block;width:auto;" /> <span id="scored-checkbox-label">生還した</span></label>
 
     <button type="submit" id="submit-btn" class="btn-primary">この打席を記録</button>
   </form>
@@ -111,7 +125,7 @@
   <div id="recent-list"></div>
 
   <button type="button" id="close-game-btn" class="btn-danger" style="margin-top:24px;">試合終了</button>
-  <p class="app-version">v1.1.3</p>
+  <p class="app-version">v1.2</p>
 </main>
 
 <div id="modal-overlay" class="modal-overlay hidden">

@@ -37,12 +37,10 @@ function build() {
   for (const pos of OUTFIELD) {
     options.push({ label: `${pos}三塁打`, shortLabel: `${POS_SHORT[pos]}三塁打`, result: 'triple', hitType: 'triple', detail: `${pos}三塁打`, group: '三塁打' });
   }
-  const errorSpots = [
-    ['ファースト', 'ゴロ'], ['セカンド', 'ゴロ'], ['セカンド', 'フライ'], ['ショート', 'ゴロ'],
-    ['サード', 'ゴロ'], ['レフト', 'フライ'], ['センター', 'フライ'], ['ライト', 'フライ'],
-  ];
-  for (const [pos, kind] of errorSpots) {
-    options.push({ label: `${pos}${kind}エラー`, shortLabel: `${POS_SHORT[pos]}${kind}エラー`, result: 'reached_on_error', detail: `${pos}${kind}エラー`, group: '失策で出塁' });
+  // エラーはゴロ/フライを区別する意味が薄いため、どのポジションが失策したかのみを選ぶ形にする
+  // (9ポジション全て。以前はゴロ/フライ別の一部組み合わせのみだった)。
+  for (const pos of [...POSITIONS, ...OUTFIELD]) {
+    options.push({ label: `${pos}エラー`, shortLabel: `${POS_SHORT[pos]}エラー`, result: 'reached_on_error', detail: `${pos}エラー`, group: '失策で出塁' });
   }
 
   options.push({ label: '本塁打', result: 'home_run', hitType: 'home_run', detail: '本塁打', group: 'その他' });
@@ -61,4 +59,18 @@ export const RESULT_OPTIONS = build();
 
 export function findResultOption(label) {
   return RESULT_OPTIONS.find((o) => o.label === label) || null;
+}
+
+// 既存のatbatレコード(result/detail)から、結果セレクトで選ぶべき選択肢を逆引きする(打席編集フォームの
+// 初期表示に使う)。detailが設定されている結果(打球方向つき)はdetail完全一致で引く。fielders_choice/
+// sac_flyは元の打球方向(セカンドゴロ/センターフライ等)がdetailにそのまま残っているため、この経路で
+// 正しく元の打球方向の選択肢に戻る(実際のfielders_choice/sac_fly化はbatter-fc-box/sac-fly-boxの
+// サブ選択で別途表現する。js/app.jsのhandleEditAtbat参照)。detailが無い結果(三振・四球等)は
+// resultの完全一致(かつdetailを持たない選択肢)で引く。
+export function findResultOptionForAtbat(atbat) {
+  if (atbat.detail) {
+    const byDetail = RESULT_OPTIONS.find((o) => o.detail === atbat.detail);
+    if (byDetail) return byDetail;
+  }
+  return RESULT_OPTIONS.find((o) => o.result === atbat.result && !o.detail) || null;
 }

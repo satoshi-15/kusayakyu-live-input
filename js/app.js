@@ -1,8 +1,8 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
-import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase } from './derive.js';
+import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase, deriveRunnersOnBaseBefore } from './derive.js';
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence } from './render.js';
-import { RESULT_OPTIONS, findResultOption } from './result-options.js';
+import { RESULT_OPTIONS, findResultOption, findResultOptionForAtbat } from './result-options.js';
 import { addLineupRow, collectLineup } from './lineup-editor.js';
 
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
@@ -65,8 +65,10 @@ const els = {
   batterSelect: document.getElementById('batter-select'),
   batterOtherLabel: document.getElementById('batter-other-label'),
   batterOtherInput: document.getElementById('batter-other-input'),
+  batterOtherRegisterBtn: document.getElementById('batter-other-register-btn'),
   runnersScoredBox: document.getElementById('runners-scored-box'),
   runnersScoredList: document.getElementById('runners-scored-list'),
+  batterAdvanceBox: document.getElementById('batter-advance-box'),
   batterFcBox: document.getElementById('batter-fc-box'),
   sacFlyBox: document.getElementById('sac-fly-box'),
   pitcherSelect: document.getElementById('pitcher-select'),
@@ -74,6 +76,7 @@ const els = {
   resultSelect: document.getElementById('result-select'),
   rbiInput: document.getElementById('rbi-input'),
   scoredCheckbox: document.getElementById('scored-checkbox'),
+  scoredCheckboxLabel: document.getElementById('scored-checkbox-label'),
   enteredByInput: document.getElementById('entered-by-input'),
   submitBtn: document.getElementById('submit-btn'),
   form: document.getElementById('atbat-form'),
@@ -98,6 +101,8 @@ const els = {
   lineupEditAddRow: document.getElementById('lineup-edit-add-row'),
   lineupEditCancel: document.getElementById('lineup-edit-cancel'),
   lineupEditSave: document.getElementById('lineup-edit-save'),
+  editModeBanner: document.getElementById('edit-mode-banner'),
+  editModeCancelBtn: document.getElementById('edit-mode-cancel-btn'),
 };
 
 if (!gameId || !accessToken) {
@@ -119,6 +124,9 @@ let currentPointer = null;
 let lastSubmittedClientUuid = null;
 let lastSubmittedAt = 0;
 let realtimeHandle = null;
+// null=通常の新規入力モード。打席オブジェクトが入っていれば、その打席を編集中
+// (この間、updatePointerAndFormはフォームに触れず、pointer-boxの表示更新のみ行う)。
+let editingAtbat = null;
 
 els.enteredByInput.value = localStorage.getItem('kusayakyu:enteredBy') || '';
 els.enteredByInput.addEventListener('change', () => {
@@ -244,7 +252,39 @@ function populateSelects() {
 
 els.batterSelect.addEventListener('change', () => {
   els.batterOtherLabel.classList.toggle('hidden', els.batterSelect.value !== '__other__');
+  if (editingAtbat) {
+    renderEditRunnersBox(editingAtbat);
+    return;
+  }
   renderRunnersScoredCheckboxes();
+});
+
+// 代打等でその場に居ない選手が打席に入る場合、自由入力の生文字列をそのままbatter_idにせず、
+// players.jsonへの正規登録(add_guest_player RPC)を経由する(試合20260719でここが原因の
+// データ不整合が発生したため)。登録成功後は打者セレクトに選択肢として追加し、その場で選択状態にする。
+els.batterOtherRegisterBtn.addEventListener('click', async () => {
+  const displayName = els.batterOtherInput.value.trim();
+  if (!displayName) { alert('表示名を入力してください'); return; }
+  els.batterOtherRegisterBtn.disabled = true;
+  try {
+    const id = `guest_${crypto.randomUUID().slice(0, 8)}`;
+    const player = await api.addGuestPlayer(id, displayName);
+    state.players.push(player);
+    state.playersById.set(player.id, player);
+    const opt = document.createElement('option');
+    opt.value = player.id;
+    opt.textContent = player.display_name;
+    els.batterSelect.insertBefore(opt, els.batterSelect.querySelector('option[value="__other__"]'));
+    els.batterSelect.value = player.id;
+    els.batterOtherLabel.classList.add('hidden');
+    els.batterOtherInput.value = '';
+    if (editingAtbat) renderEditRunnersBox(editingAtbat);
+    else renderRunnersScoredCheckboxes();
+  } catch (e) {
+    alert(`助っ人の登録に失敗しました: ${e.message || e}`);
+  } finally {
+    els.batterOtherRegisterBtn.disabled = false;
+  }
 });
 
 // 打者の結果が「セカンドゴロ」等(groundout)で、かつ走者を「アウト」にした場合のみ、
@@ -265,6 +305,9 @@ function fcApplicable() {
 // FC(併殺・野選いずれも)はrules/集計ルール.md 5節により打点0固定とし、入力欄も編集不可にする
 // (併殺で打者もアウトになる場合・野選で打者がセーフになる場合のどちらも同じく打点無し)。
 function syncBatterFcState() {
+  // 編集モード中はenterEditModeが元のresultから直接ボックスの表示を制御するため、
+  // fcApplicable()(currentPointerという「今」の状況が前提)による再判定・上書きをしない。
+  if (editingAtbat) return;
   const applicable = fcApplicable();
   els.batterFcBox.classList.toggle('hidden', !applicable);
   els.rbiInput.disabled = applicable;
@@ -311,6 +354,8 @@ function sacFlyApplicable() {
 }
 
 function syncSacFlyState() {
+  // syncBatterFcStateと同じ理由で、編集モード中はenterEditModeの直接制御を尊重する。
+  if (editingAtbat) return;
   const applicable = sacFlyApplicable();
   els.sacFlyBox.classList.toggle('hidden', !applicable);
   if (!applicable) {
@@ -383,6 +428,29 @@ function computeForcedDefaults(result, runners) {
   return forced;
 }
 
+// 走者1人分の行HTMLを生成する(通常の新規入力・打席編集モードの両方で使う共通部品)。
+// selectedValueは初期選択('scored'/'out'/'advance:塁'のいずれか。無指定なら'そのまま')。
+function runnerRowHtml(r, selectedValue) {
+  const name = escapeHtml(runnerDisplayName(r));
+  const baseLabel = BASE_LABELS[r.base] || '';
+  const groupName = `runner-${r.atbatId}`;
+  const advanceOptions = (ADVANCE_TARGETS[r.base] || [])
+    .map((base) => {
+      const value = `advance:${base}`;
+      const checked = selectedValue === value ? 'checked' : '';
+      return `<label><input type="radio" name="${groupName}" value="${value}" ${checked} style="display:inline-block;width:auto;" /> ${BASE_LABELS[base]}へ進塁</label>`;
+    })
+    .join('');
+  return `
+    <div class="runner-row">
+      <span>${r.orderNo ?? ''}番 ${name}(${baseLabel})</span>
+      <label><input type="radio" name="${groupName}" value="none" ${selectedValue ? '' : 'checked'} style="display:inline-block;width:auto;" /> そのまま</label>
+      ${advanceOptions}
+      <label><input type="radio" name="${groupName}" value="scored" ${selectedValue === 'scored' ? 'checked' : ''} style="display:inline-block;width:auto;" /> 生還</label>
+      <label><input type="radio" name="${groupName}" value="out" style="display:inline-block;width:auto;" /> アウト</label>
+    </div>`;
+}
+
 // 現在の打席の打者以外の走者一覧を、走者ごとに「そのまま/進塁(塁ごと)/生還/アウト」で出す
 // (例: A選手のヒットで既に塁に出ていたB選手がホームインした場合、両方を同時に記録できる。
 // アウトを選んだ場合は走塁死と同じ、進塁を選んだ場合は盗塁と同じ仕組みでlive_eventsに記録される)。
@@ -401,30 +469,30 @@ function renderRunnersScoredCheckboxes() {
   els.runnersScoredBox.classList.toggle('hidden', runners.length === 0);
   const opt = findResultOption(els.resultSelect.value);
   const forcedDefaults = computeForcedDefaults(opt?.result, runners);
-  els.runnersScoredList.innerHTML = runners.map((r) => {
-    const name = escapeHtml(runnerDisplayName(r));
-    const baseLabel = BASE_LABELS[r.base] || '';
-    const groupName = `runner-${r.atbatId}`;
-    const forcedValue = forcedDefaults.get(r.atbatId);
-    const advanceOptions = (ADVANCE_TARGETS[r.base] || [])
-      .map((base) => {
-        const value = `advance:${base}`;
-        const checked = forcedValue === value ? 'checked' : '';
-        return `<label><input type="radio" name="${groupName}" value="${value}" ${checked} style="display:inline-block;width:auto;" /> ${BASE_LABELS[base]}へ進塁</label>`;
-      })
-      .join('');
-    return `
-      <div class="runner-row">
-        <span>${r.orderNo ?? ''}番 ${name}(${baseLabel})</span>
-        <label><input type="radio" name="${groupName}" value="none" ${forcedValue ? '' : 'checked'} style="display:inline-block;width:auto;" /> そのまま</label>
-        ${advanceOptions}
-        <label><input type="radio" name="${groupName}" value="scored" ${forcedValue === 'scored' ? 'checked' : ''} style="display:inline-block;width:auto;" /> 生還</label>
-        <label><input type="radio" name="${groupName}" value="out" style="display:inline-block;width:auto;" /> アウト</label>
-      </div>`;
-  }).join('');
+  els.runnersScoredList.innerHTML = runners.map((r) => runnerRowHtml(r, forcedDefaults.get(r.atbatId))).join('');
   syncBatterFcState();
   syncSacFlyState();
+  syncScoredCheckboxForHomeRun();
+  syncBatterAdvanceBox();
   updateRbiDefault();
+}
+
+// 打者走者自身がエラー等でさらに先の塁まで進んだ場合を選べるボックスの表示制御
+// (失策出塁・振り逃げ・単打・野選のみ対象。振り逃げ・単打・野選は悪送球が絡む頻度が低いため
+// 折りたたみ(<details>のopen=false)にし、失策出塁のみ最初から展開しておく)。
+const BATTER_ADVANCE_RESULTS = new Set(['reached_on_error', 'strikeout_reached', 'single', 'fielders_choice']);
+
+function syncBatterAdvanceBox() {
+  const opt = findResultOption(els.resultSelect.value);
+  const applicable = !!opt && BATTER_ADVANCE_RESULTS.has(opt.result);
+  els.batterAdvanceBox.classList.toggle('hidden', !applicable);
+  if (!applicable) {
+    const noneRadio = els.batterAdvanceBox.querySelector('input[value="none"]');
+    if (noneRadio) noneRadio.checked = true;
+    els.batterAdvanceBox.open = false;
+    return;
+  }
+  els.batterAdvanceBox.open = opt.result === 'reached_on_error';
 }
 
 function syncRunnerDependentState() {
@@ -433,11 +501,30 @@ function syncRunnerDependentState() {
   updateRbiDefault();
 }
 
+// 本塁打は定義上必ず打者が生還するため、「生還した」チェックを自動でON・変更不可にする
+// (チェック忘れによるscored漏れの実害が試合20260719で発生したための対策)。
+// 攻撃側・守備側どちらでも(相手の本塁打を記録する場合も)成り立つため、isOffenseで分岐しない。
+function syncScoredCheckboxForHomeRun() {
+  const opt = findResultOption(els.resultSelect.value);
+  const isHomeRun = opt?.result === 'home_run';
+  els.scoredCheckbox.disabled = isHomeRun;
+  if (isHomeRun) els.scoredCheckbox.checked = true;
+  els.scoredCheckboxLabel.textContent = isHomeRun ? '生還した(本塁打のため自動)' : '生還した';
+}
+
 els.runnersScoredList.addEventListener('change', syncRunnerDependentState);
 els.batterFcBox.addEventListener('change', () => { syncBatterFcState(); updateRbiDefault(); });
 els.scoredCheckbox.addEventListener('change', updateRbiDefault);
 // 結果が変わるたびに走者一覧を再構築する(四球・死球での強制進塁デフォルトを再計算するため)。
-els.resultSelect.addEventListener('change', renderRunnersScoredCheckboxes);
+// 編集モード中は「今」の走者一覧(renderRunnersScoredCheckboxes)ではなく、対象打席時点の
+// 履歴ベースの走者一覧(renderEditRunnersBox)を使い続ける。
+els.resultSelect.addEventListener('change', () => {
+  if (editingAtbat) {
+    renderEditRunnersBox(editingAtbat);
+    return;
+  }
+  renderRunnersScoredCheckboxes();
+});
 
 function updateSubmitDisabled() {
   if (!currentPointer || currentPointer.side !== 'defense') {
@@ -468,6 +555,15 @@ function updatePointerAndForm() {
     .map((r) => ({ ...r, name: runnerDisplayName(r) }));
   renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats), runners);
   renderTrackPitchingToggle();
+
+  // 打席編集中は、試合終了後(closed)であってもフォームを表示し続ける(事後レビューでの編集が
+  // このアプリの主要ユースケースの一つのため)。Realtimeの更新等で「次の入力」向け自動セット処理が
+  // 編集中フォームの内容を上書きしてしまわないよう、ここで打ち切る(pointer-box自体は上で更新済み)。
+  if (editingAtbat) {
+    els.form.classList.remove('hidden');
+    els.defenseSimple.classList.add('hidden');
+    return;
+  }
 
   if (state.game.status !== 'open') {
     els.form.classList.add('hidden');
@@ -518,19 +614,218 @@ async function handleDeleteAtbat(atbat, skipConfirm) {
   await api.softDeleteAtbat(atbat.id, accessToken, deletedBy);
 }
 
-async function handleEditAtbat(atbat) {
-  const newLabel = prompt('新しい結果を入力(例: サードゴロ、レフト前ヒット、三振 等)', atbat.detail || '');
-  if (!newLabel) return;
-  const opt = findResultOption(newLabel);
-  if (!opt) { alert(`「${newLabel}」は選択肢にありません(結果セレクトと同じ表記で入力してください)`); return; }
-  const ok = await confirmModal('この打席の内容を編集しますか?');
+function handleEditAtbat(atbat) {
+  enterEditMode(atbat);
+}
+
+// 打席編集モードに入る。新規入力と同じフォーム一式(打者/結果/RBI/生還/投手/相手打者名+
+// 走者選択+打者走者自身の進塁)を、対象打席の値で埋めて再利用する。
+function enterEditMode(atbat) {
+  editingAtbat = atbat;
+  const isOffenseEdit = atbat.batter_id !== 'opponent';
+
+  els.editModeBanner.classList.remove('hidden');
+  document.querySelector('.quick-events').classList.add('hidden');
+  els.form.classList.remove('hidden');
+  els.defenseSimple.classList.add('hidden');
+  els.submitBtn.textContent = '更新する';
+  els.submitBtn.disabled = false;
+
+  els.offenseFields.classList.toggle('hidden', !isOffenseEdit);
+  els.defenseFields.classList.toggle('hidden', isOffenseEdit);
+
+  if (isOffenseEdit) {
+    // オーダーから既に外れた選手(その場登録の助っ人等)の場合、セレクトに一時的な選択肢を足す。
+    if (![...els.batterSelect.options].some((o) => o.value === atbat.batter_id)) {
+      const opt = document.createElement('option');
+      opt.value = atbat.batter_id;
+      opt.textContent = state.playersById.get(atbat.batter_id)?.display_name || atbat.batter_id;
+      els.batterSelect.insertBefore(opt, els.batterSelect.querySelector('option[value="__other__"]'));
+    }
+    els.batterSelect.value = atbat.batter_id;
+    els.batterOtherLabel.classList.add('hidden');
+  } else {
+    if (atbat.pitcher_id) els.pitcherSelect.value = atbat.pitcher_id;
+    els.opponentBatterName.value = atbat.opponent_batter_name || '';
+  }
+
+  const opt = findResultOptionForAtbat(atbat);
+  if (opt) els.resultSelect.value = opt.label;
+
+  els.scoredCheckbox.checked = !!atbat.scored;
+
+  // fielders_choice/sac_flyはcurrentPointer(「今」の状況)基準のfcApplicable/sacFlyApplicableでは
+  // 過去の打席を正しく判定できないため、保存されているresultから直接復元する
+  // (実際の打球方向はfindResultOptionForAtbatが既にdetail経由で正しく復元済み)。
+  const wasFc = atbat.result === 'fielders_choice';
+  els.batterFcBox.classList.toggle('hidden', !wasFc);
+  if (wasFc) {
+    const safeRadio = els.batterFcBox.querySelector('input[value="safe"]');
+    if (safeRadio) safeRadio.checked = true;
+    els.rbiInput.disabled = true;
+    els.rbiInput.value = 0;
+  } else {
+    els.rbiInput.disabled = false;
+    els.rbiInput.value = atbat.rbi ?? 0;
+  }
+
+  const wasSacFly = atbat.result === 'sac_fly';
+  els.sacFlyBox.classList.toggle('hidden', !wasSacFly);
+  if (wasSacFly) {
+    const yesRadio = els.sacFlyBox.querySelector('input[value="yes"]');
+    if (yesRadio) yesRadio.checked = true;
+  }
+
+  renderEditRunnersBox(atbat);
+  syncScoredCheckboxForHomeRun();
+  if (!wasFc) updateRbiDefault();
+
+  els.form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// 編集フォームの「他の走者」欄+「打者走者自身の進塁」欄を、対象打席時点の走者状態
+// (deriveRunnersOnBaseBefore)と、この打席が原因で作られた既存イベント(caused_by_atbat_id)の
+// 逆引きから復元する。ただし後続打席のrunners-scored-boxで「生還」を直接選んだケース
+// (live_atbats.scoredの直接更新、イベント記録なし)は逆引きの手段が無いため復元できない
+// (既知の制限。手動で選び直す必要がある)。
+function renderEditRunnersBox(atbat) {
+  let runners = deriveRunnersOnBaseBefore(state.game, state.atbats, state.events, atbat.id);
+  if (atbat.batter_id !== 'opponent') runners = runners.filter((r) => r.batterId !== atbat.batter_id);
+  els.runnersScoredBox.classList.toggle('hidden', runners.length === 0);
+
+  const causedEvents = state.events.filter((e) => !e.deleted_at && e.caused_by_atbat_id === atbat.id);
+  const initialSelections = new Map();
+  let ownAdvanceValue = null;
+  for (const e of causedEvents) {
+    if (e.runner_atbat_id === atbat.id) {
+      if (e.type === 'runner_advance') ownAdvanceValue = e.to_base === 'home' ? 'home' : e.to_base;
+      continue;
+    }
+    if (e.type === 'runner_out_advancing') {
+      initialSelections.set(e.runner_atbat_id, 'out');
+    } else if (e.type === 'runner_advance') {
+      initialSelections.set(e.runner_atbat_id, e.to_base === 'home' ? 'scored' : `advance:${e.to_base}`);
+    }
+  }
+
+  els.runnersScoredList.innerHTML = runners.map((r) => runnerRowHtml(r, initialSelections.get(r.atbatId))).join('');
+
+  syncBatterAdvanceBox();
+  if (ownAdvanceValue) {
+    const radio = els.batterAdvanceBox.querySelector(`input[value="${ownAdvanceValue}"]`);
+    if (radio) { radio.checked = true; els.batterAdvanceBox.open = true; }
+  }
+}
+
+// 編集モードを終了し、通常の新規入力モードに戻す(更新成功時・キャンセル時の両方で呼ぶ)。
+function exitEditMode() {
+  editingAtbat = null;
+  els.editModeBanner.classList.add('hidden');
+  document.querySelector('.quick-events').classList.remove('hidden');
+  els.submitBtn.textContent = 'この打席を記録';
+}
+
+els.editModeCancelBtn.addEventListener('click', () => {
+  exitEditMode();
+  renderAll();
+});
+
+// 更新前に旧→新の変更差分を一覧化する(UI/UXレビュー反映: 走者イベントの取消・再作成を伴う
+// 破壊的な操作のため、送信前に何が変わるか確認できるようにする)。
+function buildEditDiffSummary(atbat, payload, opt) {
+  const lines = ['この内容で更新しますか?'];
+  const oldLabel = findResultOptionForAtbat(atbat)?.label || atbat.detail || atbat.result;
+  if (oldLabel !== opt.label) lines.push(`結果: ${oldLabel} → ${opt.label}`);
+  if ((atbat.rbi ?? 0) !== payload.rbi) lines.push(`打点: ${atbat.rbi ?? 0} → ${payload.rbi}`);
+  if (!!atbat.scored !== payload.scored) lines.push(`生還: ${atbat.scored ? 'あり' : 'なし'} → ${payload.scored ? 'あり' : 'なし'}`);
+  if (atbat.batter_id !== payload.batterId) {
+    const oldName = state.playersById.get(atbat.batter_id)?.display_name || atbat.batter_id;
+    const newName = state.playersById.get(payload.batterId)?.display_name || payload.batterId;
+    lines.push(`打者: ${oldName} → ${newName}`);
+  }
+  if (lines.length === 1) lines.push('(結果・打点・生還・打者に変更はありません)');
+  lines.push('※ この打席が原因の走者の動き(進塁・生還・アウト)は、現在選択されている内容で作り直されます。');
+  return lines.join('\n');
+}
+
+async function handleEditFormSubmit(enteredBy) {
+  const atbat = editingAtbat;
+  const isOffenseEdit = atbat.batter_id !== 'opponent';
+  const opt = findResultOption(els.resultSelect.value);
+  if (!opt) { alert('結果を選択してください'); return; }
+
+  if (isOffenseEdit && els.batterSelect.value === '__other__') {
+    alert('打者が未登録です。「登録して選択」を押して助っ人を登録してください');
+    return;
+  }
+
+  const batterId = isOffenseEdit ? els.batterSelect.value : 'opponent';
+
+  const checkedRunnerRadios = [...els.runnersScoredList.querySelectorAll('input[type="radio"]:checked')];
+  const scoredRunnerIds = checkedRunnerRadios
+    .filter((el) => el.value === 'scored')
+    .map((el) => Number(el.name.replace('runner-', '')));
+  const outRunnerIds = checkedRunnerRadios
+    .filter((el) => el.value === 'out')
+    .map((el) => Number(el.name.replace('runner-', '')));
+  const advancedRunnerMoves = checkedRunnerRadios
+    .filter((el) => el.value.startsWith('advance:'))
+    .map((el) => ({ atbat_id: Number(el.name.replace('runner-', '')), to_base: el.value.replace('advance:', '') }));
+
+  let batterAdvanceToBase = null;
+  if (!els.batterAdvanceBox.classList.contains('hidden')) {
+    const value = els.batterAdvanceBox.querySelector('input[name="batter-advance"]:checked')?.value;
+    if (value && value !== 'none') batterAdvanceToBase = value;
+  }
+
+  let effectiveResult = opt.result;
+  let effectiveRbi = Number(els.rbiInput.value) || 0;
+  if (!els.batterFcBox.classList.contains('hidden')) {
+    const safe = els.batterFcBox.querySelector('input[name="batter-fc"]:checked')?.value === 'safe';
+    if (safe) { effectiveResult = 'fielders_choice'; effectiveRbi = 0; }
+  }
+  if (!els.sacFlyBox.classList.contains('hidden')) {
+    const isSacFly = els.sacFlyBox.querySelector('input[name="sac-fly"]:checked')?.value === 'yes';
+    if (isSacFly) effectiveResult = 'sac_fly';
+  }
+
+  const payload = {
+    clientUuid: crypto.randomUUID(),
+    batterId,
+    orderNo: atbat.order_no,
+    outsBefore: atbat.outs_before,
+    result: effectiveResult,
+    ab: isAtBat(effectiveResult),
+    hitType: opt.hitType || null,
+    rbi: effectiveRbi,
+    scored: els.scoredCheckbox.checked,
+    detail: opt.detail,
+    pitcherId: isOffenseEdit ? null : els.pitcherSelect.value,
+    opponentBatterName: isOffenseEdit ? null : (els.opponentBatterName.value.trim() || null),
+    enteredBy,
+    scoredRunnerIds,
+    outRunnerIds,
+    advancedRunnerMoves,
+    batterAdvanceToBase,
+  };
+
+  const ok = await confirmModal(buildEditDiffSummary(atbat, payload, opt));
   if (!ok) return;
-  await api.editAtbat(atbat.id, accessToken, {
-    batterId: atbat.batter_id, orderNo: atbat.order_no, outsBefore: atbat.outs_before,
-    result: opt.result, ab: isAtBat(opt.result), hitType: opt.hitType || null, rbi: atbat.rbi,
-    scored: atbat.scored, detail: opt.detail, pitcherId: atbat.pitcher_id,
-    opponentBatterName: atbat.opponent_batter_name,
-  });
+
+  els.submitBtn.disabled = true;
+  const originalLabel = els.submitBtn.textContent;
+  els.submitBtn.textContent = '更新中...';
+  try {
+    const row = await api.editAtbatFull(atbat.id, accessToken, payload);
+    upsertLocal(state.atbats, row);
+    exitEditMode(); // ここで「この打席を記録」ラベルへ戻すため、下のfinallyではラベルを触らない
+    renderAll();
+  } catch (e) {
+    alert(`更新に失敗しました: ${e.message || e}`);
+    els.submitBtn.textContent = originalLabel; // 編集モード継続中なので「更新する」に戻す
+  } finally {
+    els.submitBtn.disabled = false;
+  }
 }
 
 async function handleDeleteEvent(event) {
@@ -713,6 +1008,18 @@ function submitEventRetryable(payloadWithoutUuid) {
   });
 }
 
+// 打席編集(取消→再作成)は複数行の変更にまたがるため、Realtimeでは各行の変更が個別のイベントとして
+// 届く。1件ごとに即renderAll()すると、他端末では走者が一瞬消えて戻るチラつきが起こりうるため、
+// 短時間の連続更新をまとめて1回のrenderAll()に集約する(シニアエンジニアレビュー反映)。
+let renderAllDebounceTimer = null;
+function debouncedRenderAll() {
+  if (renderAllDebounceTimer) clearTimeout(renderAllDebounceTimer);
+  renderAllDebounceTimer = setTimeout(() => {
+    renderAllDebounceTimer = null;
+    renderAll();
+  }, 250);
+}
+
 // 自分の送信操作の直後にだけ呼ぶ(renderAll/updatePointerAndFormには絶対に紐付けない)。
 // Realtimeで他端末からの更新でもrenderAllは呼ばれるため、そちら経由にすると他人の入力の
 // たびに全端末の画面が上に飛んでしまう。送信結果を待たずバリデーション通過時点で呼ぶことで、
@@ -736,9 +1043,15 @@ function withDoubleTapGuard(buttons, fn) {
 
 els.form.addEventListener('submit', async (ev) => {
   ev.preventDefault();
-  const isOffense = currentPointer.side === 'offense';
   const enteredBy = els.enteredByInput.value.trim();
   if (!enteredBy) { alert('入力者名を入力してください'); return; }
+
+  if (editingAtbat) {
+    await handleEditFormSubmit(enteredBy);
+    return;
+  }
+
+  const isOffense = currentPointer.side === 'offense';
 
   if (!pointerMatchesExpected(currentPointer.lastAliveKey, state.atbats, state.events)) {
     alert('他の人が入力しました。最新の状況を確認してから、もう一度お願いします。');
@@ -748,10 +1061,15 @@ els.form.addEventListener('submit', async (ev) => {
   const opt = findResultOption(els.resultSelect.value);
   if (!opt) { alert('結果を選択してください'); return; }
 
+  // 「その他」を選んだままその場登録(add_guest_player)を完了していない場合、生の自由入力文字列を
+  // batter_idにしてしまうと事後のデータ不整合につながるため送信をブロックする(試合20260719の教訓)。
+  if (isOffense && els.batterSelect.value === '__other__') {
+    alert('打者が未登録です。「登録して選択」を押して助っ人を登録してください');
+    return;
+  }
+
   const clientUuid = crypto.randomUUID();
-  const batterId = isOffense
-    ? (els.batterSelect.value === '__other__' ? els.batterOtherInput.value.trim() : els.batterSelect.value)
-    : 'opponent';
+  const batterId = isOffense ? els.batterSelect.value : 'opponent';
 
   const checkedRunnerRadios = [...els.runnersScoredList.querySelectorAll('input[type="radio"]:checked')];
   const scoredRunnerIds = checkedRunnerRadios
@@ -763,6 +1081,13 @@ els.form.addEventListener('submit', async (ev) => {
   const advancedRunnerMoves = checkedRunnerRadios
     .filter((el) => el.value.startsWith('advance:'))
     .map((el) => ({ atbat_id: Number(el.name.replace('runner-', '')), to_base: el.value.replace('advance:', '') }));
+
+  // 打者走者自身の進塁(エラー等でさらに先の塁まで進んだ場合)。ボックス自体が非表示(対象外の結果)なら無視する。
+  let batterAdvanceToBase = null;
+  if (!els.batterAdvanceBox.classList.contains('hidden')) {
+    const value = els.batterAdvanceBox.querySelector('input[name="batter-advance"]:checked')?.value;
+    if (value && value !== 'none') batterAdvanceToBase = value;
+  }
 
   // 打者が「セカンドゴロ」等を選び、走者をアウトにし、かつ「セーフ(野選)」を選んだ場合、
   // 表示上の結果(detail)は変えずに、送信するresultだけをfielders_choiceへ内部的に切り替える
@@ -806,6 +1131,7 @@ els.form.addEventListener('submit', async (ev) => {
     scoredRunnerIds,
     outRunnerIds,
     advancedRunnerMoves,
+    batterAdvanceToBase,
   };
 
   scrollToTop();
@@ -821,6 +1147,11 @@ els.form.addEventListener('submit', async (ev) => {
   els.rbiInput.disabled = false;
   els.scoredCheckbox.checked = false;
   els.opponentBatterName.value = '';
+  const batterAdvanceNoneRadio = els.batterAdvanceBox.querySelector('input[value="none"]');
+  if (batterAdvanceNoneRadio) batterAdvanceNoneRadio.checked = true;
+  els.batterAdvanceBox.open = false;
+  // resultSelect自体はリセットされないため、本塁打が選ばれたままなら自動チェック状態を復元する。
+  syncScoredCheckboxForHomeRun();
 });
 
 els.trackPitchingToggle.addEventListener('click', async () => {
@@ -909,7 +1240,12 @@ els.lineupEditSave.addEventListener('click', async () => {
     if (!ok) return;
   }
   try {
-    await api.updateLineup(gameId, accessToken, lineup);
+    // 守備交代ログ(lineup_history)用に、変更が行われた時点のイニング・表裏・入力者名も渡す。
+    await api.updateLineup(
+      gameId, accessToken, lineup,
+      currentPointer?.inning ?? null, currentPointer?.half ?? null,
+      els.enteredByInput.value.trim() || null
+    );
     els.lineupEditBox.classList.add('hidden');
   } catch (e) {
     alert(`オーダーの保存に失敗しました: ${e.message || e}`);
@@ -990,7 +1326,7 @@ async function init() {
       } else {
         upsertLocal(state.atbats, payload.new);
       }
-      renderAll();
+      debouncedRenderAll();
     },
     onEventsChange: (payload) => {
       const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
@@ -1000,7 +1336,7 @@ async function init() {
       } else {
         upsertLocal(state.events, payload.new);
       }
-      renderAll();
+      debouncedRenderAll();
     },
     onGameChange: (payload) => {
       state.game = payload.new;

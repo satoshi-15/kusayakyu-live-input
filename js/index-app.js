@@ -58,12 +58,13 @@ form.addEventListener('submit', async (ev) => {
   const gameDate = document.getElementById('game-date').value;
   const ourHalf = document.getElementById('our-half').value;
   const trackPitching = document.getElementById('track-pitching-checkbox').checked;
+  const gameType = document.getElementById('game-type').value;
   const gameId = gameDate.replace(/-/g, '');
 
   const lineup = collectLineup(lineupRowsElm);
 
   try {
-    const accessToken = await createGame({ gameId, opponentName, gameDate, ourHalf, lineup, trackPitching });
+    const accessToken = await createGame({ gameId, opponentName, gameDate, ourHalf, lineup, trackPitching, gameType });
     localStorage.setItem(`kusayakyu:${gameId}:token`, accessToken);
     window.location.href = `./game.html#game=${encodeURIComponent(gameId)}&token=${encodeURIComponent(accessToken)}`;
   } catch (e) {

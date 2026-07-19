@@ -12,11 +12,13 @@ alter table game_secrets enable row level security;
 alter table players enable row level security;
 alter table live_atbats enable row level security;
 alter table live_events enable row level security;
+alter table lineup_history enable row level security;
 
 create policy games_select_anon on games for select using (true);
 create policy players_select_anon on players for select using (true);
 create policy live_atbats_select_anon on live_atbats for select using (true);
 create policy live_events_select_anon on live_events for select using (true);
+create policy lineup_history_select_anon on lineup_history for select using (true);
 
 -- game_secretsにはSELECTポリシーを作らない(=anon/authenticatedからは常に0行に見える)。
 

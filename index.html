@@ -29,6 +29,13 @@
         <option value="bottom">後攻(裏)</option>
       </select>
     </label>
+    <label>試合属性
+      <select id="game-type" required>
+        <option value="official">公式戦</option>
+        <option value="practice">練習試合</option>
+      </select>
+    </label>
+    <p class="field-hint">練習試合はスカイツリーグへの登録対象外になります(TeamSへは引き続き登録します)。</p>
     <label><input type="checkbox" id="track-pitching-checkbox" checked style="display:inline-block;width:auto;" /> 投手成績も記録する(相手打席の詳細入力。試合中も切り替え可能)</label>
 
     <h2>スターティングメンバー(打順)</h2>
@@ -38,7 +45,7 @@
     <button type="submit" class="btn-primary">試合を作成して入力画面へ</button>
   </form>
   <p id="error-message" class="error"></p>
-  <p class="app-version">v1.1.3</p>
+  <p class="app-version">v1.2</p>
 </main>
 <script type="module" src="./js/index-app.js"></script>
 </body>

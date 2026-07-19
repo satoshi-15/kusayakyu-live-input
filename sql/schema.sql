@@ -12,6 +12,8 @@ create table if not exists games (
   -- 投手成績(相手打席の詳細)を記録するかどうか。試合作成時に選択、試合中も変更可能。
   -- OFFの間は守備側halfを「アウトのみ」の簡易入力にする(game.html参照)。
   track_pitching boolean not null default true,
+  -- 練習試合か公式戦か。練習試合はスカイツリーグ登録の対象外にする(TeamSへは引き続き登録する)。
+  game_type text not null default 'official' check (game_type in ('official', 'practice')),
   status text not null default 'open' check (status in ('open', 'closed', 'archived')),
   created_at timestamptz not null default now(),
   closed_at timestamptz
@@ -57,6 +59,9 @@ create table if not exists live_atbats (
   deleted_at timestamptz,
   deleted_by text,
   created_at timestamptz not null default now(),
+  -- 直近の編集(edit_atbat_full)のclient_uuid。オフラインキュー・自動リトライによる編集の再送で
+  -- 走者イベントが二重に取消・再作成されるのを防ぐための冪等性ガードに使う。
+  last_edit_client_uuid uuid,
   unique (game_id, client_uuid)
 );
 
@@ -86,6 +91,10 @@ create table if not exists live_events (
   pitcher_id text,
   runner_note text,
   entered_by text,
+  -- この行を発生させた打席(submit_atbat/edit_atbat_fullが打席と同時に作る付随イベントにのみ設定)。
+  -- 打席編集(edit_atbat_full)時に「この打席が原因で作られたイベント」だけを特定して
+  -- 取消・再作成するために使う。盗塁等の単独クイックイベントはnullのまま。
+  caused_by_atbat_id bigint references live_atbats(id),
   deleted_at timestamptz,
   deleted_by text,
   created_at timestamptz not null default now(),
@@ -93,3 +102,20 @@ create table if not exists live_events (
 );
 
 create index if not exists live_events_game_idx on live_events (game_id, id);
+
+-- オーダー(打順・守備位置)編集の履歴。update_lineup RPCが呼ばれるたびに、変更後の全スナップショット
+-- を1行追加する(差分計算はせず、表示側で前回スナップショットとの比較として導出する設計)。
+-- 守備位置の交代がいつ・誰によって行われたかを追跡し、将来的なスカイツリーグ登録の守備欄自動反映・
+-- 盗塁阻止(捕手成績)算出の入力に使う想定(現時点では記録のみ)。
+create table if not exists lineup_history (
+  id bigint generated always as identity primary key,
+  game_id text not null references games(game_id) on delete cascade,
+  -- 変更時点のイニング・表裏(呼び出し元がcurrentPointerから渡す。試合開始前の初期登録ならnull)。
+  inning int,
+  half text check (half is null or half in ('top', 'bottom')),
+  lineup jsonb not null,
+  changed_by text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists lineup_history_game_idx on lineup_history (game_id, id);
