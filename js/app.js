@@ -3,7 +3,7 @@ import { subscribeToGame } from './realtime.js';
 import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase, deriveRunnersOnBaseBefore } from './derive.js';
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence } from './render.js';
 import { RESULT_OPTIONS, findResultOption, findResultOptionForAtbat } from './result-options.js';
-import { addLineupRow, collectLineup } from './lineup-editor.js';
+import { addLineupRow, collectLineup, POSITIONS } from './lineup-editor.js';
 
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
 // 走者の現在の塁から見て、まだ進める先の塁一覧(生還は別選択肢のため含まない)。
@@ -65,6 +65,7 @@ const els = {
   batterSelect: document.getElementById('batter-select'),
   batterOtherLabel: document.getElementById('batter-other-label'),
   batterOtherInput: document.getElementById('batter-other-input'),
+  batterOtherPosition: document.getElementById('batter-other-position'),
   batterOtherRegisterBtn: document.getElementById('batter-other-register-btn'),
   runnersScoredBox: document.getElementById('runners-scored-box'),
   runnersScoredList: document.getElementById('runners-scored-list'),
@@ -230,11 +231,28 @@ function selectAdvanceModal(runners) {
   });
 }
 
+// 選手IDから、現在のlineup上の打順(order_no)を引く。lineupに載っていない(その場登録直後で
+// まだupdate_lineupの反映が来ていない等)場合はnullを返す。
+function lineupOrderNoFor(batterId) {
+  const entry = (state.game.lineup || []).find((r) => r.batter_id === batterId);
+  return entry ? entry.order_no : null;
+}
+
 function populateSelects() {
   const lineup = state.game.lineup || [];
+  // update_lineup(オーダー編集・助っ人のその場登録)はgamesテーブルの更新としてRealtime経由でも
+  // onGameChangeを呼ぶため、この関数は1回の操作で複数回呼ばれ得る。呼ばれるたびに選択中の打者を
+  // 先頭(1番)へリセットしてしまわないよう、直前の選択値を再構築後も維持する。
+  const previousBatterValue = els.batterSelect.value;
   els.batterSelect.innerHTML = lineup
     .map((r) => `<option value="${r.batter_id}">${r.order_no}番 ${state.playersById.get(r.batter_id)?.display_name || r.batter_id}${r.position ? '(' + r.position + ')' : ''}</option>`)
     .join('') + '<option value="__other__">その他(自由入力)</option>';
+  if ([...els.batterSelect.options].some((o) => o.value === previousBatterValue)) {
+    els.batterSelect.value = previousBatterValue;
+  }
+
+  els.batterOtherPosition.innerHTML = '<option value="">選択</option>'
+    + POSITIONS.map((p) => `<option value="${p}">${p}</option>`).join('');
 
   els.pitcherSelect.innerHTML = state.players
     .map((p) => `<option value="${p.id}">${p.display_name}</option>`)
@@ -262,22 +280,37 @@ els.batterSelect.addEventListener('change', () => {
 // 代打等でその場に居ない選手が打席に入る場合、自由入力の生文字列をそのままbatter_idにせず、
 // players.jsonへの正規登録(add_guest_player RPC)を経由する(試合20260719でここが原因の
 // データ不整合が発生したため)。登録成功後は打者セレクトに選択肢として追加し、その場で選択状態にする。
+// 助っ人をその場登録するだけでなく、打順・守備位置が空のまま記録される不具合(試合20260719で発覚)を
+// 防ぐため、登録と同時にlineup(打順・守備位置の唯一の記録場所)へも追加する。追加する打順は
+// 現在のlineupの末尾+1(このタイミングで打席に入る=打順としては次の空き番号という前提)。
 els.batterOtherRegisterBtn.addEventListener('click', async () => {
   const displayName = els.batterOtherInput.value.trim();
   if (!displayName) { alert('表示名を入力してください'); return; }
+  const position = els.batterOtherPosition.value || null;
   els.batterOtherRegisterBtn.disabled = true;
   try {
     const id = `guest_${crypto.randomUUID().slice(0, 8)}`;
     const player = await api.addGuestPlayer(id, displayName);
     state.players.push(player);
     state.playersById.set(player.id, player);
-    const opt = document.createElement('option');
-    opt.value = player.id;
-    opt.textContent = player.display_name;
-    els.batterSelect.insertBefore(opt, els.batterSelect.querySelector('option[value="__other__"]'));
+
+    const newLineup = [...(state.game.lineup || []), {
+      order_no: (state.game.lineup || []).length + 1,
+      batter_id: player.id,
+      position,
+    }];
+    await api.updateLineup(
+      gameId, accessToken, newLineup,
+      currentPointer?.inning ?? null, currentPointer?.half ?? null,
+      els.enteredByInput.value.trim() || null
+    );
+    state.game.lineup = newLineup;
+    populateSelects();
+
     els.batterSelect.value = player.id;
     els.batterOtherLabel.classList.add('hidden');
     els.batterOtherInput.value = '';
+    els.batterOtherPosition.value = '';
     if (editingAtbat) renderEditRunnersBox(editingAtbat);
     else renderRunnersScoredCheckboxes();
   } catch (e) {
@@ -792,7 +825,9 @@ async function handleEditFormSubmit(enteredBy) {
   const payload = {
     clientUuid: crypto.randomUUID(),
     batterId,
-    orderNo: atbat.order_no,
+    // 編集時に打者を変更した場合、元のorder_noのままだと選手が変わっているのに打順だけ古いままになる。
+    // 現在のlineup上のorder_noを優先し、見つからない場合のみ元の値を保持する。
+    orderNo: isOffenseEdit ? (lineupOrderNoFor(batterId) ?? atbat.order_no) : atbat.order_no,
     outsBefore: atbat.outs_before,
     result: effectiveResult,
     ab: isAtBat(effectiveResult),
@@ -1117,7 +1152,10 @@ els.form.addEventListener('submit', async (ev) => {
     inning: currentPointer.inning,
     half: currentPointer.half,
     batterId,
-    orderNo: isOffense ? currentPointer.nextOrderNo : null,
+    // 「次はこの打順のはず」という予測(nextOrderNo)ではなく、実際に選択されている打者の
+    // lineup上の打順を送信する(代打・助っ人選手が予測とは異なる打順で入った場合に、送信される
+    // order_noが実際の打者とズレる不具合の修正)。lineupに見つからない場合のみ予測値にフォールバックする。
+    orderNo: isOffense ? (lineupOrderNoFor(batterId) ?? currentPointer.nextOrderNo) : null,
     outsBefore: currentPointer.outs,
     result: effectiveResult,
     ab: isAtBat(effectiveResult),
