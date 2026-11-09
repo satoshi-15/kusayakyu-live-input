@@ -19,6 +19,71 @@ function clear(elm) {
   while (elm.firstChild) elm.removeChild(elm.firstChild);
 }
 
+function el(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  return e;
+}
+
+// 試合終了後の結果画面(スコアボード+自チーム個人打撃成績)。summaryはderiveGameSummaryの戻り値。
+export function renderScoreboard(elm, game, summary, playersById) {
+  clear(elm);
+  const { innings, rows, ourHalf, ours, opponent, batting } = summary;
+
+  const verdict = ours > opponent ? '勝利' : ours < opponent ? '敗戦' : '引き分け';
+  const head = el('div', 'scoreboard-head');
+  head.appendChild(el('div', 'scoreboard-title', `試合終了 ${verdict}`));
+  head.appendChild(el('div', 'scoreboard-sub', `${game.game_date || ''} vs ${game.opponent_name || '相手'}`));
+  head.appendChild(el('div', `scoreboard-final scoreboard-${verdict === '勝利' ? 'win' : verdict === '敗戦' ? 'lose' : 'draw'}`, `${ours} - ${opponent}`));
+  elm.appendChild(head);
+
+  const wrap = el('div', 'scoreboard-scroll');
+  const table = el('table', 'scoreboard-table');
+  const thead = el('tr');
+  thead.appendChild(el('th', 'sb-team', ''));
+  for (let i = 1; i <= innings; i++) thead.appendChild(el('th', null, i));
+  thead.appendChild(el('th', 'sb-total', '計'));
+  table.appendChild(thead);
+  const totalOf = (h) => (h === ourHalf ? ours : opponent);
+  const bottomWon = totalOf('bottom') > totalOf('top');
+  for (const half of ['top', 'bottom']) {
+    const isOurs = half === ourHalf;
+    const tr = el('tr', isOurs ? 'sb-ours' : null);
+    tr.appendChild(el('th', 'sb-team', isOurs ? '自チーム' : (game.opponent_name || '相手')));
+    rows[half].forEach((v, i) => {
+      // 最終回の裏で攻撃が無く後攻がリードしている場合は「X」、それ以外の未攻撃は空欄。
+      const isLastBottomSkip = v === null && half === 'bottom' && i === innings - 1 && bottomWon;
+      tr.appendChild(el('td', null, v === null ? (isLastBottomSkip ? 'X' : '') : v));
+    });
+    tr.appendChild(el('td', 'sb-total', isOurs ? ours : opponent));
+    table.appendChild(tr);
+  }
+  wrap.appendChild(table);
+  elm.appendChild(wrap);
+
+  if (batting.length) {
+    elm.appendChild(el('h3', 'scoreboard-h3', '個人成績'));
+    const bwrap = el('div', 'scoreboard-scroll');
+    const bt = el('table', 'batting-table');
+    const hr = el('tr');
+    for (const h of ['選手', '打数', '安打', '打点', '得点', '打席結果']) hr.appendChild(el('th', null, h));
+    bt.appendChild(hr);
+    for (const b of batting) {
+      const tr = el('tr');
+      tr.appendChild(el('td', 'bt-name', playersById.get(b.batterId)?.display_name || b.batterId));
+      tr.appendChild(el('td', null, b.ab));
+      tr.appendChild(el('td', b.hits ? 'bt-hit' : null, b.hits));
+      tr.appendChild(el('td', null, b.rbi));
+      tr.appendChild(el('td', null, b.runs));
+      tr.appendChild(el('td', 'bt-results', b.results.map((r) => r.detail || RESULT_LABELS[r.result] || r.result).join('、')));
+      bt.appendChild(tr);
+    }
+    bwrap.appendChild(bt);
+    elm.appendChild(bwrap);
+  }
+}
+
 export function renderConnectionStatus(elm, status) {
   const map = {
     SUBSCRIBED: { text: '同期済み', cls: 'status-ok' },

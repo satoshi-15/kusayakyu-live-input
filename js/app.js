@@ -1,7 +1,7 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
-import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase, deriveRunnersOnBaseBefore } from './derive.js';
-import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence } from './render.js';
+import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase, deriveRunnersOnBaseBefore, deriveGameSummary } from './derive.js';
+import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence, renderScoreboard } from './render.js';
 import { RESULT_OPTIONS, findResultOption, findResultOptionForAtbat } from './result-options.js';
 import { addLineupRow, collectLineup, POSITIONS } from './lineup-editor.js';
 
@@ -85,6 +85,7 @@ const els = {
   undoBtn: document.getElementById('undo-btn'),
   recentList: document.getElementById('recent-list'),
   closeGameBtn: document.getElementById('close-game-btn'),
+  scoreboardBox: document.getElementById('scoreboard-box'),
   modalOverlay: document.getElementById('modal-overlay'),
   modalMessage: document.getElementById('modal-message'),
   modalCancel: document.getElementById('modal-cancel'),
@@ -287,6 +288,8 @@ els.batterOtherRegisterBtn.addEventListener('click', async () => {
   const displayName = els.batterOtherInput.value.trim();
   if (!displayName) { alert('表示名を入力してください'); return; }
   const position = els.batterOtherPosition.value || null;
+  // 守備位置が空のままだとスカイツリーグ登録の守備欄が埋まらない(試合20261108で発覚)ため必須にする。
+  if (!position) { alert('守備位置を選択してください(守備に就かない場合はDH)'); return; }
   els.batterOtherRegisterBtn.disabled = true;
   try {
     const id = `guest_${crypto.randomUUID().slice(0, 8)}`;
@@ -588,6 +591,15 @@ function updatePointerAndForm() {
     .map((r) => ({ ...r, name: runnerDisplayName(r) }));
   renderPointer(els.pointerBox, currentPointer, state.playersById, deriveScore(state.atbats), runners);
   renderTrackPitchingToggle();
+
+  // 試合終了後は「次の打者」表示の代わりに結果画面(スコアボード+個人成績)を出す。
+  // 事後の打席編集でも即時に再計算されるよう、renderAllのたびに描き直す。
+  const finished = state.game.status !== 'open';
+  els.scoreboardBox.classList.toggle('hidden', !finished);
+  els.pointerBox.classList.toggle('hidden', finished);
+  if (finished) {
+    renderScoreboard(els.scoreboardBox, state.game, deriveGameSummary(state.game, state.atbats), state.playersById);
+  }
 
   // 打席編集中は、試合終了後(closed)であってもフォームを表示し続ける(事後レビューでの編集が
   // このアプリの主要ユースケースの一つのため)。Realtimeの更新等で「次の入力」向け自動セット処理が
@@ -1193,8 +1205,12 @@ els.form.addEventListener('submit', async (ev) => {
 });
 
 els.trackPitchingToggle.addEventListener('click', async () => {
+  // OFFの間の守備は相手の得点を把握するためだけの簡易入力になり、投手成績には含まれない(運用方針)。
+  const offWarning = state.game.track_pitching
+    ? 'OFFの間は相手の得点だけを記録し、その区間は投手成績に含まれません。'
+    : '';
   const ok = await confirmModal(
-    `投手成績記録を${state.game.track_pitching ? 'OFF' : 'ON'}に切り替えますか?入力中のフォームがある場合、内容は失われます。`
+    `投手成績記録を${state.game.track_pitching ? 'OFF' : 'ON'}に切り替えますか?${offWarning}入力中のフォームがある場合、内容は失われます。`
   );
   if (!ok) return;
   try {
@@ -1213,8 +1229,14 @@ function submitSimpleDefense(result, ab) {
     alert('他の人が入力しました。最新の状況を確認してから、もう一度お願いします。');
     return;
   }
-  const clientUuid = crypto.randomUUID();
   const scored = els.simpleScoredCheckbox.checked;
+  // 走者がいない状態でのアウトに「得点した」が付く誤タップを防ぐ(試合20261108の1回表先頭で発生)。
+  if (scored && result === 'groundout'
+      && deriveRunnersOnBase(state.game, state.atbats, state.events).length === 0) {
+    alert('塁上に走者がいないため、アウトのプレーで得点は入りません。「得点した」のチェックを外してください。');
+    return;
+  }
+  const clientUuid = crypto.randomUUID();
   const payload = {
     clientUuid,
     inning: currentPointer.inning,
@@ -1331,7 +1353,7 @@ async function init() {
   state.atbats = atbats;
   state.events = events;
 
-  els.gameInfo.textContent = `${game.opponent_name || '(相手未設定)'} / ${game.game_date || ''} / ${game.status === 'closed' ? '試合終了' : '試合中'}`;
+  els.gameInfo.textContent = `${game.opponent_name || '(相手未設定)'} / ${game.game_date || ''} / ${game.status === 'open' ? '試合中' : '試合終了'}`;
   if (game.status !== 'open') {
     els.form.classList.add('hidden');
     els.closeGameBtn.classList.add('hidden');
@@ -1383,6 +1405,8 @@ async function init() {
         els.trackPitchingToggle.classList.add('hidden');
         document.querySelector('.quick-events').classList.add('hidden');
         els.gameInfo.textContent = `${state.game.opponent_name || ''} / 試合終了`;
+        // 試合終了ボタンを押した直後に結果画面(ページ上部のスコアボード)が見えるようにする。
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       }
       // オーダー編集(update_lineup)でlineupが変わった場合に打者セレクトへ反映する。
       populateSelects();

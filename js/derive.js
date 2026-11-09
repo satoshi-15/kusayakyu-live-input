@@ -209,6 +209,54 @@ export function deriveScore(atbats) {
   return { ours, opponent };
 }
 
+// 試合結果画面用: イニングごとの得点(スコアボード)と自チームの個人打撃成績を導出する。
+// 得点はderiveScoreと同じくscoredフラグの数(投手成績OFFの簡易入力区間も含む)。
+const HIT_RESULTS = new Set(['single', 'double', 'triple', 'home_run']);
+
+export function deriveGameSummary(game, atbats) {
+  const alive = aliveAtbats(atbats);
+  const ourHalf = game.our_half || 'bottom';
+  const lastInning = alive.reduce((m, a) => Math.max(m, a.inning || 0), 0);
+  const innings = Math.max(lastInning, 1);
+  const rows = { top: Array(innings).fill(0), bottom: Array(innings).fill(0) };
+  const played = { top: new Set(), bottom: new Set() };
+  let ourHits = 0;
+  for (const a of alive) {
+    played[a.half].add(a.inning);
+    if (a.scored) rows[a.half][a.inning - 1] += 1;
+    if (a.half === ourHalf && HIT_RESULTS.has(a.result)) ourHits += 1;
+  }
+  // 攻撃が無かった半イニング(後攻のサヨナラ・最終回裏不要など)は「X」/空欄で表示するためnullにする。
+  for (const half of ['top', 'bottom']) {
+    for (let i = 0; i < innings; i++) {
+      if (!played[half].has(i + 1)) rows[half][i] = null;
+    }
+  }
+  const total = (h) => rows[h].reduce((s, v) => s + (v || 0), 0);
+  const ours = total(ourHalf);
+  const opponent = total(ourHalf === 'top' ? 'bottom' : 'top');
+
+  const batting = new Map();
+  for (const a of alive) {
+    if (a.half !== ourHalf || a.batter_id === 'opponent') continue;
+    if (!batting.has(a.batter_id)) {
+      batting.set(a.batter_id, { batterId: a.batter_id, orderNo: a.order_no, ab: 0, hits: 0, rbi: 0, runs: 0, results: [] });
+    }
+    const b = batting.get(a.batter_id);
+    if (a.ab ?? isAtBat(a.result)) b.ab += 1;
+    if (HIT_RESULTS.has(a.result)) b.hits += 1;
+    b.rbi += a.rbi || 0;
+    if (a.scored) b.runs += 1;
+    b.results.push({ result: a.result, detail: a.detail || null });
+  }
+  const lineupOrder = new Map((game.lineup || []).map((r) => [r.batter_id, r.order_no]));
+  const battingList = [...batting.values()].sort(
+    (x, y) => (lineupOrder.get(x.batterId) ?? x.orderNo ?? 99) - (lineupOrder.get(y.batterId) ?? y.orderNo ?? 99)
+  );
+
+  return { innings, rows, ourHalf, ours, opponent, ourHits, batting: battingList };
+}
+
 // 送信前の楽観的整合性チェック: フォームを開いた時点のポインタと、実際の最新状態を突き合わせる。
 // 一致しなければ「他の人が入力した」とみなして送信をブロックする(UI/UXレビュー反映)。
 export function pointerMatchesExpected(expectedLastAliveKey, atbats, events) {

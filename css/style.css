@@ -203,3 +203,26 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; 
 .lineup-row label { flex: 1; margin-bottom: 0; }
 .lineup-edit-actions { display: flex; gap: 8px; margin-top: 12px; }
 .lineup-edit-actions button { flex: 1; }
+
+/* --- 試合結果画面(スコアボード) --- */
+.scoreboard { margin: 12px 0 20px; }
+.scoreboard-head { text-align: center; margin-bottom: 12px; }
+.scoreboard-title { font-size: 1.4em; font-weight: bold; }
+.scoreboard-sub { opacity: 0.7; margin-top: 2px; }
+.scoreboard-final { font-size: 2.6em; font-weight: bold; margin-top: 6px; letter-spacing: 0.05em; font-variant-numeric: tabular-nums; }
+.scoreboard-win { color: var(--accent); }
+.scoreboard-lose { color: var(--danger); }
+.scoreboard-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.scoreboard-table { border-collapse: collapse; width: 100%; background: #0f3d22; color: #fff; border-radius: 6px; overflow: hidden; font-variant-numeric: tabular-nums; }
+.scoreboard-table th, .scoreboard-table td { padding: 8px 6px; text-align: center; border: 1px solid #2a5a3c; min-width: 26px; }
+.scoreboard-table tr:first-child th { background: #0a2e19; font-weight: normal; font-size: 0.85em; color: #cfe3d6; }
+.scoreboard-table .sb-team { text-align: left; white-space: nowrap; max-width: 8em; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
+.scoreboard-table .sb-total { font-weight: bold; color: #ffd75e; font-size: 1.15em; }
+.scoreboard-table .sb-ours .sb-team { color: #ffd75e; }
+.scoreboard-h3 { margin: 18px 0 6px; font-size: 1.05em; }
+.batting-table { border-collapse: collapse; width: 100%; font-size: 0.92em; font-variant-numeric: tabular-nums; }
+.batting-table th, .batting-table td { border-bottom: 1px solid var(--border); padding: 6px 4px; text-align: center; white-space: nowrap; }
+.batting-table th { font-weight: normal; opacity: 0.7; font-size: 0.9em; }
+.batting-table .bt-name { text-align: left; font-weight: bold; }
+.batting-table .bt-hit { color: var(--accent); font-weight: bold; }
+.batting-table .bt-results { text-align: left; white-space: normal; min-width: 10em; font-size: 0.9em; }
