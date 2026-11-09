@@ -1,7 +1,11 @@
 // 打席・イベント一覧から「現在の入力対象」を都度導出する純粋関数群。
 // サーバー側にポインタ状態を持たない設計(実装計画フェーズ2参照)。
 
-export const OUT_RESULTS = new Set(['groundout', 'flyout', 'strikeout', 'sac_bunt', 'sac_fly']);
+// interference_out=守備妨害(打者アウト)。
+export const OUT_RESULTS = new Set(['groundout', 'flyout', 'strikeout', 'sac_bunt', 'sac_fly', 'interference_out']);
+// 守備側の失策が記録される結果(スコアボードのE列)。打撃妨害・走塁妨害は公認野球規則上、
+// 妨害した野手に失策が記録される。
+export const ERROR_RESULTS = new Set(['reached_on_error', 'catcher_interference', 'obstruction']);
 // fielders_choiceは、打者自身の結果だけでは自動的にアウトとしない(自チーム・相手チーム共通)。
 // 併殺(打者もアウト)か野選(打者はセーフ、走者のみアウト)かでアウト数が変わるため、
 // 走者への明示的なアウトマーキング(runner_out_advancingイベント)からのみアウトを数える。
@@ -12,8 +16,9 @@ export const OUT_EVENT_TYPES = new Set(['caught_stealing', 'runner_out_advancing
 // scripts/aggregate.py の AB_RESULTS と同じ(rules/集計ルール.md ルール2)。
 export const AB_RESULTS = new Set([
   'groundout', 'flyout', 'strikeout', 'single', 'double', 'triple', 'home_run',
-  'fielders_choice', 'reached_on_error', 'strikeout_reached',
+  'fielders_choice', 'reached_on_error', 'strikeout_reached', 'interference_out',
 ]);
+// 打撃妨害(catcher_interference)・走塁妨害(obstruction)で一塁を与えられた打席は打数に数えない。
 
 export function isAtBat(result) {
   return AB_RESULTS.has(result);
@@ -100,7 +105,7 @@ export function derivePointer(game, atbats, events) {
 // 出塁した結果ごとの初期塁。以降の進塁は盗塁イベント・runner_advanceイベントで明示的に反映する。
 const BASE_ON_HIT = {
   single: 'first', walk: 'first', hbp: 'first', reached_on_error: 'first', fielders_choice: 'first',
-  strikeout_reached: 'first',
+  strikeout_reached: 'first', catcher_interference: 'first', obstruction: 'first',
   double: 'second', triple: 'third',
 };
 const NEXT_BASE = { first: 'second', second: 'third' };
@@ -220,12 +225,29 @@ export function deriveGameSummary(game, atbats) {
   const innings = Math.max(lastInning, 1);
   const rows = { top: Array(innings).fill(0), bottom: Array(innings).fill(0) };
   const played = { top: new Set(), bottom: new Set() };
-  let ourHits = 0;
+  // H=その半の攻撃側の安打数、E=その半の守備側の失策数(=攻撃側の失策出塁・妨害出塁の数)。
+  // スコアボードの行は攻撃側チームなので、E列はもう一方の半(相手攻撃中)の数を表示する。
+  const hits = { top: 0, bottom: 0 };
+  const errorsWhileBatting = { top: 0, bottom: 0 };
+  // 投手成績OFFの簡易入力(相手打席でpitcher_idなし)は安打・失策の区別が無いため、含まれる半は不明扱い。
+  const unknown = { top: false, bottom: false };
   for (const a of alive) {
     played[a.half].add(a.inning);
     if (a.scored) rows[a.half][a.inning - 1] += 1;
-    if (a.half === ourHalf && HIT_RESULTS.has(a.result)) ourHits += 1;
+    if (HIT_RESULTS.has(a.result)) hits[a.half] += 1;
+    if (ERROR_RESULTS.has(a.result)) errorsWhileBatting[a.half] += 1;
+    if (a.batter_id === 'opponent' && !a.pitcher_id) unknown[a.half] = true;
   }
+  const other = (h) => (h === 'top' ? 'bottom' : 'top');
+  const hitsByHalf = {
+    top: unknown.top ? null : hits.top,
+    bottom: unknown.bottom ? null : hits.bottom,
+  };
+  const errorsByHalf = {
+    top: unknown[other('top')] ? null : errorsWhileBatting[other('top')],
+    bottom: unknown[other('bottom')] ? null : errorsWhileBatting[other('bottom')],
+  };
+  const ourHits = hits[ourHalf];
   // 攻撃が無かった半イニング(後攻のサヨナラ・最終回裏不要など)は「X」/空欄で表示するためnullにする。
   for (const half of ['top', 'bottom']) {
     for (let i = 0; i < innings; i++) {
@@ -254,7 +276,7 @@ export function deriveGameSummary(game, atbats) {
     (x, y) => (lineupOrder.get(x.batterId) ?? x.orderNo ?? 99) - (lineupOrder.get(y.batterId) ?? y.orderNo ?? 99)
   );
 
-  return { innings, rows, ourHalf, ours, opponent, ourHits, batting: battingList };
+  return { innings, rows, ourHalf, ours, opponent, ourHits, hitsByHalf, errorsByHalf, batting: battingList };
 }
 
 // 送信前の楽観的整合性チェック: フォームを開いた時点のポインタと、実際の最新状態を突き合わせる。

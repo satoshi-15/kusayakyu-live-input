@@ -51,6 +51,11 @@ function build() {
   options.push({ label: '犠打', result: 'sac_bunt', detail: null, group: 'その他' });
   options.push({ label: '犠飛', result: 'sac_fly', detail: null, group: 'その他' });
   options.push({ label: '野選(フィルダースチョイス)', result: 'fielders_choice', detail: null, group: 'その他' });
+  // 妨害系(2026-11追加)。守備妨害=打者アウト(打数に数える)。打撃妨害・走塁妨害=打者に一塁が
+  // 与えられる(打数に数えず、妨害した野手に失策)。
+  options.push({ label: '守備妨害(打者アウト)', shortLabel: '守備妨害', result: 'interference_out', detail: '守備妨害', group: '妨害' });
+  options.push({ label: '打撃妨害(出塁)', shortLabel: '打撃妨害', result: 'catcher_interference', detail: '打撃妨害', group: '妨害' });
+  options.push({ label: '走塁妨害(出塁)', shortLabel: '走塁妨害', result: 'obstruction', detail: '走塁妨害', group: '妨害' });
 
   return options;
 }

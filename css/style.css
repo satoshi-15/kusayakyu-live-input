@@ -226,3 +226,6 @@ fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; 
 .batting-table .bt-name { text-align: left; font-weight: bold; }
 .batting-table .bt-hit { color: var(--accent); font-weight: bold; }
 .batting-table .bt-results { text-align: left; white-space: normal; min-width: 10em; font-size: 0.9em; }
+.scoreboard-table .sb-he { color: #cfe3d6; }
+.scoreboard-table .sb-he-first { border-left: 3px solid #2a5a3c; }
+.scoreboard-note { font-size: 0.8em; opacity: 0.65; margin: 4px 0 0; }

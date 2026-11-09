@@ -5,7 +5,8 @@ const RESULT_LABELS = {
   groundout: 'ゴロ', flyout: 'フライ', strikeout: '三振', walk: '四球', hbp: '死球',
   single: '単打', double: '二塁打', triple: '三塁打', home_run: '本塁打',
   sac_bunt: '犠打', sac_fly: '犠飛', fielders_choice: '野選', reached_on_error: '失策出塁',
-  strikeout_reached: '振り逃げ',
+  strikeout_reached: '振り逃げ', interference_out: '守備妨害', catcher_interference: '打撃妨害',
+  obstruction: '走塁妨害',
 };
 
 const EVENT_LABELS = {
@@ -44,6 +45,8 @@ export function renderScoreboard(elm, game, summary, playersById) {
   thead.appendChild(el('th', 'sb-team', ''));
   for (let i = 1; i <= innings; i++) thead.appendChild(el('th', null, i));
   thead.appendChild(el('th', 'sb-total', '計'));
+  thead.appendChild(el('th', 'sb-he sb-he-first', '安'));
+  thead.appendChild(el('th', 'sb-he', '失'));
   table.appendChild(thead);
   const totalOf = (h) => (h === ourHalf ? ours : opponent);
   const bottomWon = totalOf('bottom') > totalOf('top');
@@ -57,10 +60,18 @@ export function renderScoreboard(elm, game, summary, playersById) {
       tr.appendChild(el('td', null, v === null ? (isLastBottomSkip ? 'X' : '') : v));
     });
     tr.appendChild(el('td', 'sb-total', isOurs ? ours : opponent));
+    const h = summary.hitsByHalf[half];
+    const e = summary.errorsByHalf[half];
+    tr.appendChild(el('td', 'sb-he sb-he-first', h === null ? '-' : h));
+    tr.appendChild(el('td', 'sb-he', e === null ? '-' : e));
     table.appendChild(tr);
   }
   wrap.appendChild(table);
   elm.appendChild(wrap);
+  if (summary.hitsByHalf.top === null || summary.hitsByHalf.bottom === null
+      || summary.errorsByHalf.top === null || summary.errorsByHalf.bottom === null) {
+    elm.appendChild(el('p', 'scoreboard-note', '「-」は投手成績記録OFF(得点のみ記録)の区間を含むため不明'));
+  }
 
   if (batting.length) {
     elm.appendChild(el('h3', 'scoreboard-h3', '個人成績'));

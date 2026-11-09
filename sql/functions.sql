@@ -433,7 +433,8 @@ begin
 
   -- 編集後この打席が塁に残るかどうか(出塁する結果、かつ自分自身は生還していない)。
   v_will_stay_on_base := p_result in
-    ('single', 'double', 'triple', 'home_run', 'walk', 'hbp', 'reached_on_error', 'fielders_choice', 'strikeout_reached')
+    ('single', 'double', 'triple', 'home_run', 'walk', 'hbp', 'reached_on_error', 'fielders_choice', 'strikeout_reached',
+     'catcher_interference', 'obstruction')
     and not p_scored;
 
   -- 出塁しない結果に変わる場合、この打席をrunner_atbat_idとして参照する「他の打席が原因で作られた」

@@ -41,10 +41,12 @@ create table if not exists live_atbats (
   batter_id text not null,
   order_no int,
   outs_before int check (outs_before between 0 and 2),
-  -- scripts/validate.py の ALLOWED_RESULTS (AB_RESULTS | NON_AB_RESULTS) と同じ14種。
-  result text not null check (result in (
+  -- scripts/validate.py の ALLOWED_RESULTS (AB_RESULTS | NON_AB_RESULTS) と同じ17種。
+  -- 既存DBへの追加はsql/migrations/20261109_add_interference_results.sqlを参照。
+  result text not null constraint live_atbats_result_check check (result in (
     'groundout', 'flyout', 'strikeout', 'walk', 'hbp', 'single', 'double', 'triple',
-    'home_run', 'sac_bunt', 'sac_fly', 'fielders_choice', 'reached_on_error', 'strikeout_reached'
+    'home_run', 'sac_bunt', 'sac_fly', 'fielders_choice', 'reached_on_error', 'strikeout_reached',
+    'interference_out', 'catcher_interference', 'obstruction'
   )),
   ab boolean not null default false,
   hit_type text check (hit_type is null or hit_type in ('single', 'double', 'triple', 'home_run')),

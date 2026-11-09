@@ -358,7 +358,8 @@ function syncBatterFcState() {
 // 打点を自動計上しない結果(常に0固定): エラーで出塁(相手の失策では打点を付与しない)、
 // 野選(直接選択された場合。groundout+FCボックス経由の場合はsyncBatterFcStateのdisabledで別途0固定済み)、
 // 三振・振り逃げ(打者が打撃で走者を還したわけではないため、同時に走者が生還してもRBIは付かない)。
-const NO_RBI_RESULTS = new Set(['reached_on_error', 'fielders_choice', 'strikeout', 'strikeout_reached']);
+// 守備妨害(打者アウト)も同様に打点なし。打撃妨害・走塁妨害は満塁での押し出しなら打点が付くため対象外。
+const NO_RBI_RESULTS = new Set(['reached_on_error', 'fielders_choice', 'strikeout', 'strikeout_reached', 'interference_out']);
 
 // 生還にチェックが入った走者の数(+本塁打で打者自身が生還した場合の1点)を打点のデフォルト値
 // として反映する。あくまでデフォルトであり、送信ボタンを押すまで人間が手動で上書きできる。
@@ -431,7 +432,8 @@ function computeForcedDefaults(result, runners) {
   // 押し出される(単打等でも「打者が一塁に生きる」こと自体は確定するため、四球と同じ
   // 押し出しロジックがそのまま成り立つ)。野選(fielders_choice)は既存のbatter-fc-box/
   // runnersScoredListの「アウト」選択で個別に扱うため、ここでは対象外にする。
-  if (result === 'walk' || result === 'hbp' || result === 'single' || result === 'reached_on_error') {
+  if (result === 'walk' || result === 'hbp' || result === 'single' || result === 'reached_on_error'
+      || result === 'catcher_interference' || result === 'obstruction') {
     const occupied = new Set(runners.map((r) => r.base));
     for (const r of runners) {
       if (r.base === 'first') {
