@@ -1,6 +1,8 @@
 // DOM描画。ユーザー入力(相手打者名・入力者名等)はtextContent経由でのみ挿入し、XSSを避ける。
 import { aliveAtbats, aliveEvents } from './derive.js';
 
+const TEAM_NAME = '大田ブルーウェーブ';
+
 const RESULT_LABELS = {
   groundout: 'ゴロ', flyout: 'フライ', strikeout: '三振', walk: '四球', hbp: '死球',
   single: '単打', double: '二塁打', triple: '三塁打', home_run: '本塁打',
@@ -53,7 +55,7 @@ export function renderScoreboard(elm, game, summary, playersById) {
   for (const half of ['top', 'bottom']) {
     const isOurs = half === ourHalf;
     const tr = el('tr', isOurs ? 'sb-ours' : null);
-    tr.appendChild(el('th', 'sb-team', isOurs ? '自チーム' : (game.opponent_name || '相手')));
+    tr.appendChild(el('th', 'sb-team', isOurs ? TEAM_NAME :(game.opponent_name || '相手')));
     rows[half].forEach((v, i) => {
       // 最終回の裏で攻撃が無く後攻がリードしている場合は「X」、それ以外の未攻撃は空欄。
       const isLastBottomSkip = v === null && half === 'bottom' && i === innings - 1 && bottomWon;
@@ -155,7 +157,7 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
   if (score) {
     const scoreLine = document.createElement('div');
     scoreLine.className = 'pointer-score';
-    scoreLine.textContent = `自チーム ${score.ours} - ${score.opponent} 相手`;
+    scoreLine.textContent = `${TEAM_NAME} ${score.ours} - ${score.opponent} 相手`;
     elm.appendChild(scoreLine);
     const scoreNote = document.createElement('div');
     scoreNote.className = 'pointer-score-note';
