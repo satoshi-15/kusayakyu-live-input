@@ -59,21 +59,25 @@ form.addEventListener('submit', async (ev) => {
   const ourHalf = document.getElementById('our-half').value;
   const trackPitching = document.getElementById('track-pitching-checkbox').checked;
   const gameType = document.getElementById('game-type').value;
-  const gameId = gameDate.replace(/-/g, '');
+  const baseId = gameDate.replace(/-/g, '');
 
   const lineup = collectLineup(lineupRowsElm);
 
-  try {
-    const accessToken = await createGame({ gameId, opponentName, gameDate, ourHalf, lineup, trackPitching, gameType });
-    localStorage.setItem(`kusayakyu:${gameId}:token`, accessToken);
-    window.location.href = `./game.html#game=${encodeURIComponent(gameId)}&token=${encodeURIComponent(accessToken)}`;
-  } catch (e) {
-    if (e.code === '23505') {
-      errorElm.textContent = `この日付(${gameDate})の試合は既に作成されています。同じ日に2試合ある場合は今のところ非対応です。`;
-    } else {
+  // 同じ日の2試合目以降(ダブルヘッダー)は 20261114_2, 20261114_3 ... のIDで作成する。
+  for (let n = 1; n <= 5; n++) {
+    const gameId = n === 1 ? baseId : `${baseId}_${n}`;
+    try {
+      const accessToken = await createGame({ gameId, opponentName, gameDate, ourHalf, lineup, trackPitching, gameType });
+      localStorage.setItem(`kusayakyu:${gameId}:token`, accessToken);
+      window.location.href = `./game.html#game=${encodeURIComponent(gameId)}&token=${encodeURIComponent(accessToken)}`;
+      return;
+    } catch (e) {
+      if (e.code === '23505') continue;
       errorElm.textContent = `試合を作成できませんでした: ${e.message || e}`;
+      return;
     }
   }
+  errorElm.textContent = `この日付(${gameDate})の試合は既に5試合作成されています。`;
 });
 
 init();
