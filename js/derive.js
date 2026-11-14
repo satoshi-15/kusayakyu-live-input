@@ -200,6 +200,55 @@ export function deriveRunnersOnBaseBefore(game, atbats, events, targetAtbatId) {
   return [...onBase.values()];
 }
 
+// 送信しようとしている内容で、塁状況に矛盾が起きないかを検査する(試合20261114で、野選の際に
+// 三塁走者が「そのまま」のまま二塁走者を三塁へ進め、三塁に2人いる状態で記録されて得点が1点
+// 抜けた・アウトの打者に「生還した」が付いて得点が1点多くなった、という入力ミスの再発防止)。
+// runners: 現在の塁上の走者 [{atbatId, base, label}]
+// moves: Map(atbatId -> 'none' | 'scored' | 'out' | 'advance:<base>')(無い走者は'none'扱い)
+// batter: 打者走者 {result, scored, advanceTo, label}(クイックイベント時はnull)
+// 戻り値: エラー説明文の配列(空なら問題なし)。
+const BASE_NAMES = { first: '一塁', second: '二塁', third: '三塁' };
+const BASE_ORDER = { first: 1, second: 2, third: 3 };
+export function findBaseConflicts({ runners, moves, batter }) {
+  const errors = [];
+  const occupants = { first: [], second: [], third: [] };
+  // 元から同じ塁に重なっていた走者(過去データの不整合)が「そのまま」なのは、今回の送信の責任では
+  // ないためエラーにしない(その場合も送信できなくなって試合が止まるのを避ける)。
+  const preexisting = new Set();
+  const countByBase = {};
+  for (const r of runners) countByBase[r.base] = (countByBase[r.base] || 0) + 1;
+
+  for (const r of runners) {
+    const mv = moves.get(r.atbatId) || 'none';
+    if (mv === 'scored' || mv === 'out') continue;
+    const to = mv.startsWith('advance:') ? mv.slice('advance:'.length) : r.base;
+    if (to === 'home') continue;
+    if (BASE_ORDER[to] < BASE_ORDER[r.base]) {
+      errors.push(`${r.label}が${BASE_NAMES[r.base]}から${BASE_NAMES[to]}へ戻ることになっています。`);
+    }
+    if (mv === 'none' && countByBase[r.base] > 1) preexisting.add(r.atbatId);
+    if (occupants[to]) occupants[to].push({ label: r.label, atbatId: r.atbatId });
+  }
+
+  if (batter) {
+    const isOut = OUT_RESULTS.has(batter.result);
+    if (isOut && batter.scored) {
+      errors.push(`打者(${batter.label})はアウトの結果なので「生還した」は付けられません。生還したのは塁上の走者のはずなので、走者の欄で「生還」を選んでください。`);
+    } else if (!isOut && !batter.scored && batter.result !== 'home_run') {
+      const to = batter.advanceTo && batter.advanceTo !== 'none' ? batter.advanceTo : BASE_ON_HIT[batter.result];
+      if (to && to !== 'home' && occupants[to]) occupants[to].push({ label: `打者(${batter.label})`, atbatId: null });
+    }
+  }
+
+  for (const base of ['first', 'second', 'third']) {
+    const list = occupants[base];
+    if (list.length < 2) continue;
+    if (list.every((o) => o.atbatId != null && preexisting.has(o.atbatId))) continue;
+    errors.push(`${list.map((o) => o.label).join('と')}が同時に${BASE_NAMES[base]}にいることになります。前の走者を進塁・生還・アウトのどれかにしてください(例: 野選でホームセーフなら三塁走者は「生還」)。`);
+  }
+  return errors;
+}
+
 // 現在のスコア(自チーム・相手それぞれの生還数)を集計する。
 // 投手成績OFF中も相手の得点だけは把握できるようにするための軽量表示用(公式記録への登録は別途手動)。
 export function deriveScore(atbats) {

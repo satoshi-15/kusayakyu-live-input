@@ -1,6 +1,6 @@
 import * as api from './api.js';
 import { subscribeToGame } from './realtime.js';
-import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase, deriveRunnersOnBaseBefore, deriveGameSummary } from './derive.js';
+import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunnersOnBase, deriveRunnersOnBaseBefore, deriveGameSummary, findBaseConflicts } from './derive.js';
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence, renderScoreboard } from './render.js';
 import { RESULT_OPTIONS, findResultOption, findResultOptionForAtbat } from './result-options.js';
 import { addLineupRow, collectLineup, POSITIONS } from './lineup-editor.js';
@@ -795,6 +795,25 @@ function buildEditDiffSummary(atbat, payload, opt) {
   return lines.join('\n');
 }
 
+// 送信前の塁状況チェック(derive.jsのfindBaseConflicts)。走者欄で選ばれている内容と打者の結果から、
+// 同じ塁に2人いる・アウトの打者が生還、などの矛盾があればエラーを表示してtrueを返す(送信中止)。
+function blockIfBaseConflicts(runners, batter) {
+  const moves = new Map();
+  for (const el of els.runnersScoredList.querySelectorAll('input[type="radio"]:checked')) {
+    moves.set(Number(el.name.replace('runner-', '')), el.value);
+  }
+  const labeled = runners.map((r) => ({ ...r, label: runnerDisplayName(r) }));
+  const errors = findBaseConflicts({ runners: labeled, moves, batter });
+  if (errors.length === 0) return false;
+  alert(`この内容では送信できません。\n\n${errors.join('\n\n')}`);
+  return true;
+}
+
+function batterLabelFor(batterId) {
+  if (batterId === 'opponent') return els.opponentBatterName.value.trim() || '相手打者';
+  return state.playersById.get(batterId)?.display_name || batterId;
+}
+
 async function handleEditFormSubmit(enteredBy) {
   const atbat = editingAtbat;
   const isOffenseEdit = atbat.batter_id !== 'opponent';
@@ -857,6 +876,14 @@ async function handleEditFormSubmit(enteredBy) {
     advancedRunnerMoves,
     batterAdvanceToBase,
   };
+
+  {
+    let runners = deriveRunnersOnBaseBefore(state.game, state.atbats, state.events, atbat.id);
+    if (isOffenseEdit) runners = runners.filter((r) => r.batterId !== atbat.batter_id);
+    if (blockIfBaseConflicts(runners, {
+      result: effectiveResult, scored: payload.scored, advanceTo: batterAdvanceToBase, label: batterLabelFor(batterId),
+    })) return;
+  }
 
   const ok = await confirmModal(buildEditDiffSummary(atbat, payload, opt));
   if (!ok) return;
@@ -960,6 +987,21 @@ for (const btn of els.quickEventButtons) {
           }
           if (advanceMoves === null) return; // キャンセル: 何も記録しない
           if (runners.length > 0 && advanceMoves.length === 0) return; // 進塁した走者が誰もいなければ何も記録しない
+        }
+
+        // 盗塁・暴投・パスボール・ボークで、進んだ先の塁に別の走者が残っている状態にならないか確認する。
+        if (type === 'stolen_base' || needsForcedAdvance) {
+          const runners = deriveRunnersOnBase(state.game, state.atbats, state.events)
+            .map((r) => ({ ...r, label: runnerDisplayName(r) }));
+          const moves = new Map();
+          if (type === 'stolen_base' && runnerAtbatId != null) {
+            const r = runners.find((x) => x.atbatId === runnerAtbatId);
+            const to = r ? IMMEDIATE_NEXT[r.base] : null;
+            if (to) moves.set(runnerAtbatId, to === 'home' ? 'scored' : `advance:${to}`);
+          }
+          for (const m of advanceMoves) moves.set(m.atbatId, m.toBase === 'home' ? 'scored' : `advance:${m.toBase}`);
+          const errors = findBaseConflicts({ runners, moves, batter: null });
+          if (errors.length) { alert(`この内容では送信できません。\n\n${errors.join('\n\n')}`); return; }
         }
 
         // 主イベント→進塁イベントの順に逐次送信する(created_atの前後関係を保つため並行送信はしない)。
@@ -1185,6 +1227,14 @@ els.form.addEventListener('submit', async (ev) => {
     advancedRunnerMoves,
     batterAdvanceToBase,
   };
+
+  {
+    let runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
+    if (isOffense) runners = runners.filter((r) => r.batterId !== batterId);
+    if (blockIfBaseConflicts(runners, {
+      result: effectiveResult, scored: payload.scored, advanceTo: batterAdvanceToBase, label: batterLabelFor(batterId),
+    })) return;
+  }
 
   scrollToTop();
   withDoubleTapGuard([els.submitBtn], (release) => {
