@@ -267,7 +267,7 @@ export function deriveScore(atbats) {
 // 得点はderiveScoreと同じくscoredフラグの数(投手成績OFFの簡易入力区間も含む)。
 const HIT_RESULTS = new Set(['single', 'double', 'triple', 'home_run']);
 
-export function deriveGameSummary(game, atbats) {
+export function deriveGameSummary(game, atbats, events = []) {
   const alive = aliveAtbats(atbats);
   const ourHalf = game.our_half || 'bottom';
   const lastInning = alive.reduce((m, a) => Math.max(m, a.inning || 0), 0);
@@ -286,6 +286,12 @@ export function deriveGameSummary(game, atbats) {
     if (HIT_RESULTS.has(a.result)) hits[a.half] += 1;
     if (ERROR_RESULTS.has(a.result)) errorsWhileBatting[a.half] += 1;
     if (a.batter_id === 'opponent' && !a.pitcher_id) unknown[a.half] = true;
+  }
+  // 盗塁時の送球エラー等、打席以外の失策(runner_noteが「失策:」で始まるイベント)も攻撃側の半に数える。
+  for (const e of events || []) {
+    if (!e.deleted_at && typeof e.runner_note === 'string' && e.runner_note.startsWith('失策:')) {
+      errorsWhileBatting[e.half] += 1;
+    }
   }
   const other = (h) => (h === 'top' ? 'bottom' : 'top');
   const hitsByHalf = {

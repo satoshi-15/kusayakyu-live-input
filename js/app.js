@@ -232,6 +232,54 @@ function selectAdvanceModal(runners) {
   });
 }
 
+// 盗塁時の送球エラー(例: 一三塁から一塁走者が盗塁、捕手の三塁送球が逸れて三塁走者生還・盗塁者も三塁へ)。
+// runnersは盗塁成立後の位置(盗塁者は1つ先の塁)で渡す。失策した野手と各走者の最終的な塁を選ばせる。
+// 戻り値: null(キャンセル) | { position, moves: [{atbatId, toBase, runnerId}] }(位置が変わった走者のみ)。
+const ERROR_FIELDERS = ['キャッチャー', 'ピッチャー', 'ファースト', 'セカンド', 'サード', 'ショート', 'レフト', 'センター', 'ライト'];
+const BASE_ORDER = ['first', 'second', 'third', 'home'];
+function stealErrorModal(runners) {
+  return new Promise((resolve) => {
+    const posOptions = ERROR_FIELDERS.map((p) => `<option value="${p}">${p}</option>`).join('');
+    const rowsHtml = runners.map((r) => {
+      const name = escapeHtml(runnerDisplayName(r));
+      const dests = BASE_ORDER.slice(BASE_ORDER.indexOf(r.base));
+      const opts = dests.map((b, i) => {
+        const text = i === 0 ? `そのまま(${BASE_LABELS[b] || '生還'})` : (b === 'home' ? '生還' : `${BASE_LABELS[b]}へ`);
+        // 送球エラーで盗塁者以外の走者が1つ進むのが典型なので、盗塁者はそのまま・他は1つ先をデフォルトにする。
+        const sel = (r.isStealer ? i === 0 : i === 1) ? ' selected' : '';
+        return `<option value="${b}"${sel}>${text}</option>`;
+      }).join('');
+      return `
+        <div class="runner-row">
+          <span>${r.orderNo ?? ''}番 ${name}${r.isStealer ? '(盗塁)' : ''}</span>
+          <select data-steal-err-runner="${r.atbatId}">${opts}</select>
+        </div>`;
+    }).join('');
+    els.modalMessage.innerHTML = `
+      <p class="field-hint">盗塁+送球エラー: 失策した野手と、プレー後の各走者の位置を選んでください</p>
+      <label>失策した野手 <select id="steal-err-position">${posOptions}</select></label>
+      ${rowsHtml}`;
+    els.modalOverlay.classList.remove('hidden');
+    const cleanup = (apply) => {
+      els.modalOverlay.classList.add('hidden');
+      if (!apply) { resolve(null); return; }
+      const position = els.modalMessage.querySelector('#steal-err-position').value;
+      const moves = [];
+      for (const r of runners) {
+        const to = els.modalMessage.querySelector(`select[data-steal-err-runner="${r.atbatId}"]`)?.value;
+        if (to && to !== r.base) {
+          moves.push({ atbatId: r.atbatId, toBase: to, runnerId: r.batterId === 'opponent' ? (r.opponentBatterName || null) : r.batterId });
+        }
+      }
+      // 先の塁の走者から順に記録する(本塁に近い走者が先に動いた順序にしておく)。
+      moves.sort((a, b) => BASE_ORDER.indexOf(b.toBase) - BASE_ORDER.indexOf(a.toBase));
+      resolve({ position, moves });
+    };
+    els.modalConfirm.onclick = () => cleanup(true);
+    els.modalCancel.onclick = () => cleanup(false);
+  });
+}
+
 // 選手IDから、現在のlineup上の打順(order_no)を引く。lineupに載っていない(その場登録直後で
 // まだupdate_lineupの反映が来ていない等)場合はnullを返す。
 function lineupOrderNoFor(batterId) {
@@ -485,7 +533,7 @@ function runnerRowHtml(r, selectedValue) {
       <label><input type="radio" name="${groupName}" value="none" ${selectedValue ? '' : 'checked'} style="display:inline-block;width:auto;" /> そのまま</label>
       ${advanceOptions}
       <label><input type="radio" name="${groupName}" value="scored" ${selectedValue === 'scored' ? 'checked' : ''} style="display:inline-block;width:auto;" /> 生還</label>
-      <label><input type="radio" name="${groupName}" value="out" style="display:inline-block;width:auto;" /> アウト</label>
+      <label><input type="radio" name="${groupName}" value="out" ${selectedValue === 'out' ? 'checked' : ''} style="display:inline-block;width:auto;" /> アウト</label>
     </div>`;
 }
 
@@ -520,9 +568,15 @@ function renderRunnersScoredCheckboxes() {
 // 折りたたみ(<details>のopen=false)にし、失策出塁のみ最初から展開しておく)。
 const BATTER_ADVANCE_RESULTS = new Set(['reached_on_error', 'strikeout_reached', 'single', 'fielders_choice']);
 
+// ゴロ+走者アウト+「打者セーフ(野選)」の場合も対象にする(例: 三塁走者が挟殺される間に打者が二塁へ)。
+function isBatterFcSafe() {
+  return !els.batterFcBox.classList.contains('hidden')
+    && els.batterFcBox.querySelector('input[name="batter-fc"]:checked')?.value === 'safe';
+}
+
 function syncBatterAdvanceBox() {
   const opt = findResultOption(els.resultSelect.value);
-  const applicable = !!opt && BATTER_ADVANCE_RESULTS.has(opt.result);
+  const applicable = !!opt && (BATTER_ADVANCE_RESULTS.has(opt.result) || isBatterFcSafe());
   els.batterAdvanceBox.classList.toggle('hidden', !applicable);
   if (!applicable) {
     const noneRadio = els.batterAdvanceBox.querySelector('input[value="none"]');
@@ -530,11 +584,12 @@ function syncBatterAdvanceBox() {
     els.batterAdvanceBox.open = false;
     return;
   }
-  els.batterAdvanceBox.open = opt.result === 'reached_on_error';
+  els.batterAdvanceBox.open = opt.result === 'reached_on_error' || isBatterFcSafe();
 }
 
 function syncRunnerDependentState() {
   syncBatterFcState();
+  syncBatterAdvanceBox();
   syncSacFlyState();
   updateRbiDefault();
 }
@@ -551,7 +606,7 @@ function syncScoredCheckboxForHomeRun() {
 }
 
 els.runnersScoredList.addEventListener('change', syncRunnerDependentState);
-els.batterFcBox.addEventListener('change', () => { syncBatterFcState(); updateRbiDefault(); });
+els.batterFcBox.addEventListener('change', () => { syncBatterFcState(); syncBatterAdvanceBox(); updateRbiDefault(); });
 els.scoredCheckbox.addEventListener('change', updateRbiDefault);
 // 結果が変わるたびに走者一覧を再構築する(四球・死球での強制進塁デフォルトを再計算するため)。
 // 編集モード中は「今」の走者一覧(renderRunnersScoredCheckboxes)ではなく、対象打席時点の
@@ -600,7 +655,7 @@ function updatePointerAndForm() {
   els.scoreboardBox.classList.toggle('hidden', !finished);
   els.pointerBox.classList.toggle('hidden', finished);
   if (finished) {
-    renderScoreboard(els.scoreboardBox, state.game, deriveGameSummary(state.game, state.atbats), state.playersById);
+    renderScoreboard(els.scoreboardBox, state.game, deriveGameSummary(state.game, state.atbats, state.events), state.playersById);
   }
 
   // 打席編集中は、試合終了後(closed)であってもフォームを表示し続ける(事後レビューでの編集が
@@ -941,7 +996,9 @@ for (const btn of els.quickEventButtons) {
       alert('他の人が入力しました。最新の状況を確認してから、もう一度お願いします。');
       return;
     }
-    const type = btn.dataset.event;
+    // 「盗塁+送球エラー」は盗塁イベント+エラーによる追加進塁(runner_advance)として記録する。
+    const stealWithError = btn.dataset.event === 'stolen_base_error';
+    const type = stealWithError ? 'stolen_base' : btn.dataset.event;
     scrollToTop();
 
     withDoubleTapGuard(els.quickEventButtons, async (release) => {
@@ -957,6 +1014,7 @@ for (const btn of els.quickEventButtons) {
         let runnerId = null;
         let runnerAtbatId = null;
         let advanceMoves = [];
+        let mainRunnerNote = null;
         if (needsRunner) {
           const runners = deriveRunnersOnBase(state.game, state.atbats, state.events);
           let picked = null;
@@ -974,6 +1032,16 @@ for (const btn of els.quickEventButtons) {
           if (picked) {
             runnerId = picked.batterId === 'opponent' ? (picked.opponentBatterName || null) : picked.batterId;
             runnerAtbatId = picked.atbatId;
+          }
+          if (stealWithError) {
+            if (!picked) { alert('走者を特定できないため、盗塁+送球エラーは記録できません。'); return; }
+            const after = deriveRunnersOnBase(state.game, state.atbats, state.events)
+              .map((r) => (r.atbatId === picked.atbatId ? { ...r, base: IMMEDIATE_NEXT[r.base], isStealer: true } : r))
+              .filter((r) => r.base !== 'home');
+            const res = await stealErrorModal(after);
+            if (res === null) return; // キャンセル
+            mainRunnerNote = `失策:${res.position}(送球)`;
+            advanceMoves = res.moves;
           }
         }
         if (needsForcedAdvance) {
@@ -1012,7 +1080,7 @@ for (const btn of els.quickEventButtons) {
           runnerId,
           runnerAtbatId,
           pitcherId,
-          runnerNote: null,
+          runnerNote: mainRunnerNote,
           enteredBy,
         });
         for (const move of advanceMoves) {
@@ -1024,7 +1092,7 @@ for (const btn of els.quickEventButtons) {
             runnerAtbatId: move.atbatId,
             toBase: move.toBase,
             pitcherId: null,
-            runnerNote: null,
+            runnerNote: stealWithError ? '送球エラーで進塁' : null,
             enteredBy,
           });
         }

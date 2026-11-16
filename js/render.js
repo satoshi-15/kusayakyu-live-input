@@ -214,7 +214,7 @@ export function renderRecentList(elm, atbats, events, playersById, handlers) {
     const label = document.createElement('span');
     const runnerName = e.runner_id ? (playersById.get(e.runner_id)?.display_name || e.runner_id) : '';
     const toBaseSuffix = e.type === 'runner_advance' && e.to_base ? `(${BASE_LABELS[e.to_base] || e.to_base}へ)` : '';
-    label.textContent = `${e.inning}回${e.half === 'top' ? '表' : '裏'} ${EVENT_LABELS[e.type] || e.type}${runnerName ? ' ' + runnerName : ''}${toBaseSuffix}`;
+    label.textContent = `${e.inning}回${e.half === 'top' ? '表' : '裏'} ${EVENT_LABELS[e.type] || e.type}${runnerName ? ' ' + runnerName : ''}${toBaseSuffix}${e.runner_note ? `(${e.runner_note})` : ''}`;
     row.appendChild(label);
     const delBtn = document.createElement('button');
     delBtn.textContent = '取消';
