@@ -24,12 +24,27 @@ export function isAtBat(result) {
   return AB_RESULTS.has(result);
 }
 
+// 記録時刻(created_at)順。修正モード(v1.8)で過去の行の間に挿入した行は、前後の行の中間の
+// created_atを持つため、id順ではなく時刻順に並べる(同時刻はid順)。
+function byTimeThenId(a, b) {
+  const t = new Date(a.created_at) - new Date(b.created_at);
+  return t !== 0 ? t : a.id - b.id;
+}
+
 export function aliveAtbats(atbats) {
-  return atbats.filter((a) => !a.deleted_at).sort((a, b) => a.id - b.id);
+  return atbats.filter((a) => !a.deleted_at).sort(byTimeThenId);
 }
 
 export function aliveEvents(events) {
-  return events.filter((e) => !e.deleted_at).sort((a, b) => a.id - b.id);
+  return events.filter((e) => !e.deleted_at).sort(byTimeThenId);
+}
+
+// 「最後に書き込まれた行」のキー(他の人の入力を検知する用)。挿入行は時刻順で最後にならないため最大idで判定する。
+function latestWriteKey(atbats, events) {
+  const maxId = (list) => list.reduce((m, x) => (x.deleted_at ? m : Math.max(m, x.id)), 0);
+  const a = maxId(atbats);
+  const e = maxId(events);
+  return `${a ? `a${a}` : ''}|${e ? `e${e}` : ''}`;
 }
 
 // 打席とイベントを記録時刻順にマージする(打席の結果自体はアウトでなくても、
@@ -74,8 +89,7 @@ export function derivePointer(game, atbats, events) {
   const inningState = deriveInningState(atbats, events);
   const isOurHalf = inningState.half === game.our_half;
   const alive = aliveAtbats(atbats);
-  const aliveEv = aliveEvents(events);
-  const lastAliveKey = `${alive.length ? `a${alive[alive.length - 1].id}` : ''}|${aliveEv.length ? `e${aliveEv[aliveEv.length - 1].id}` : ''}`;
+  const lastAliveKey = latestWriteKey(atbats, events);
 
   if (isOurHalf) {
     const lineup = game.lineup || [];
@@ -134,7 +148,7 @@ export function deriveRunnersOnBase(game, atbats, events) {
     const e = item.ref;
     if (e.inning !== inning || e.half !== half) continue;
     if (e.runner_atbat_id == null) continue;
-    if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing') {
+    if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing' || e.type === 'runner_removed') {
       onBase.delete(e.runner_atbat_id);
     } else if (e.type === 'stolen_base') {
       const r = onBase.get(e.runner_atbat_id);
@@ -181,7 +195,7 @@ export function deriveRunnersOnBaseBefore(game, atbats, events, targetAtbatId) {
     } else {
       const e = item.ref;
       if (e.runner_atbat_id == null) continue;
-      if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing') {
+      if (e.type === 'caught_stealing' || e.type === 'runner_out_advancing' || e.type === 'runner_removed') {
         onBase.delete(e.runner_atbat_id);
       } else if (e.type === 'stolen_base') {
         const r = onBase.get(e.runner_atbat_id);
@@ -337,8 +351,80 @@ export function deriveGameSummary(game, atbats, events = []) {
 // 送信前の楽観的整合性チェック: フォームを開いた時点のポインタと、実際の最新状態を突き合わせる。
 // 一致しなければ「他の人が入力した」とみなして送信をブロックする(UI/UXレビュー反映)。
 export function pointerMatchesExpected(expectedLastAliveKey, atbats, events) {
-  const alive = aliveAtbats(atbats);
-  const aliveEv = aliveEvents(events);
-  const actualKey = `${alive.length ? `a${alive[alive.length - 1].id}` : ''}|${aliveEv.length ? `e${aliveEv[aliveEv.length - 1].id}` : ''}`;
-  return actualKey === expectedLastAliveKey;
+  return latestWriteKey(atbats, events) === expectedLastAliveKey;
+}
+
+// --- 修正モード(v1.8) ---
+
+// 試合全体の打席+イベントを時刻順に並べた一覧(取消済みも含む)。修正モードの一覧表示用。
+export function fullTimeline(atbats, events) {
+  const a = atbats.map((x) => ({ kind: 'atbat', ref: x }));
+  const e = events.map((x) => ({ kind: 'event', ref: x }));
+  return [...a, ...e].sort((x, y) => byTimeThenId(x.ref, y.ref));
+}
+
+// 指定した時刻(cutoffTs)の直後時点で、(inning, half)の塁上にいる走者一覧。cutoffTs以前の行だけを見る。
+// 打席で直接「生還」を付けた走者(生還イベントが無い)は、いつ生還したか分からないため、
+// cutoff時点で塁上に残っている扱いにし、laterScored=trueを付ける。
+export function deriveRunnersAt(atbats, events, inning, half, cutoffTs) {
+  const cutoff = cutoffTs ? new Date(cutoffTs).getTime() : Infinity;
+  const onBase = new Map();
+  for (const item of mergeTimeline(atbats, events)) {
+    if (new Date(item.ts).getTime() > cutoff) break;
+    const r = item.ref;
+    if (r.inning !== inning || r.half !== half) continue;
+    if (item.kind === 'atbat') {
+      const base = BASE_ON_HIT[r.result];
+      if (!base) continue;
+      onBase.set(r.id, {
+        atbatId: r.id, batterId: r.batter_id, orderNo: r.order_no, base, laterScored: !!r.scored,
+        opponentBatterName: r.batter_id === 'opponent' ? (r.opponent_batter_name || null) : null,
+      });
+    } else {
+      if (r.runner_atbat_id == null) continue;
+      if (r.type === 'caught_stealing' || r.type === 'runner_out_advancing' || r.type === 'runner_removed') {
+        onBase.delete(r.runner_atbat_id);
+      } else if (r.type === 'stolen_base') {
+        const x = onBase.get(r.runner_atbat_id);
+        if (x && NEXT_BASE[x.base]) x.base = NEXT_BASE[x.base];
+        else if (x && x.base === 'third') onBase.delete(r.runner_atbat_id); // 本盗
+      } else if (r.type === 'runner_advance') {
+        if (r.to_base === 'home') onBase.delete(r.runner_atbat_id);
+        else {
+          const x = onBase.get(r.runner_atbat_id);
+          if (x && r.to_base) x.base = r.to_base;
+        }
+      }
+    }
+  }
+  return [...onBase.values()];
+}
+
+// 各打席のアウト数(outs_before)を時刻順に数え直す。戻り値:
+//   updates: 保存値と違う打席の [{id, outs}](0〜2に丸める)
+//   overflow: アウトが4つ以上になっている半イニングの一覧(例: ['3回表'])
+export function recomputeOutsBefore(atbats, events) {
+  const outsByHalf = new Map();
+  const updates = [];
+  const overflow = new Set();
+  for (const item of mergeTimeline(atbats, events)) {
+    const r = item.ref;
+    const key = `${r.inning}:${r.half}`;
+    const outs = outsByHalf.get(key) || 0;
+    if (item.kind === 'atbat') {
+      const want = Math.min(outs, 2);
+      if (outs >= 3) overflow.add(`${r.inning}回${r.half === 'top' ? '表' : '裏'}`);
+      if (r.outs_before !== want) updates.push({ id: r.id, outs: want });
+      if (OUT_RESULTS.has(r.result)) outsByHalf.set(key, outs + 1);
+    } else if (OUT_EVENT_TYPES.has(r.type)) {
+      outsByHalf.set(key, outs + 1);
+    }
+  }
+  for (const [key, n] of outsByHalf) {
+    if (n > 3) {
+      const [inning, half] = key.split(':');
+      overflow.add(`${inning}回${half === 'top' ? '表' : '裏'}`);
+    }
+  }
+  return { updates, overflow: [...overflow] };
 }

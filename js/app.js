@@ -4,6 +4,7 @@ import { derivePointer, pointerMatchesExpected, isAtBat, deriveScore, deriveRunn
 import { renderConnectionStatus, renderPointer, renderRecentList, renderPendingBadge, renderPresence, renderScoreboard } from './render.js';
 import { RESULT_OPTIONS, findResultOption, findResultOptionForAtbat } from './result-options.js';
 import { addLineupRow, collectLineup, POSITIONS } from './lineup-editor.js';
+import { createCorrection } from './correction.js';
 
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁' };
 // 走者の現在の塁から見て、まだ進める先の塁一覧(生還は別選択肢のため含まない)。
@@ -129,6 +130,8 @@ let realtimeHandle = null;
 // null=通常の新規入力モード。打席オブジェクトが入っていれば、その打席を編集中
 // (この間、updatePointerAndFormはフォームに触れず、pointer-boxの表示更新のみ行う)。
 let editingAtbat = null;
+// 修正モード(v1.8)。init()で生成する。
+let correction = null;
 
 els.enteredByInput.value = localStorage.getItem('kusayakyu:enteredBy') || '';
 els.enteredByInput.addEventListener('change', () => {
@@ -701,6 +704,7 @@ function renderAll() {
   });
   renderPendingBadge(els.pendingBadge, state.pending);
   updatePointerAndForm();
+  correction?.render();
 
   const canUndo = lastSubmittedClientUuid && (Date.now() - lastSubmittedAt) < 5000;
   els.undoBtn.classList.toggle('hidden', !canUndo);
@@ -714,6 +718,8 @@ async function handleDeleteAtbat(atbat, skipConfirm) {
   }
   const deletedBy = els.enteredByInput.value.trim() || '(不明)';
   await api.softDeleteAtbat(atbat.id, accessToken, deletedBy);
+  // 途中の打席を取り消すと後ろの打席のアウト数がずれるため数え直す(v1.8)。
+  correction?.recalcOuts();
 }
 
 function handleEditAtbat(atbat) {
@@ -951,6 +957,7 @@ async function handleEditFormSubmit(enteredBy) {
     upsertLocal(state.atbats, row);
     exitEditMode(); // ここで「この打席を記録」ラベルへ戻すため、下のfinallyではラベルを触らない
     renderAll();
+    correction?.recalcOuts();
   } catch (e) {
     alert(`更新に失敗しました: ${e.message || e}`);
     els.submitBtn.textContent = originalLabel; // 編集モード継続中なので「更新する」に戻す
@@ -964,6 +971,7 @@ async function handleDeleteEvent(event) {
   if (!ok) return;
   const deletedBy = els.enteredByInput.value.trim() || '(不明)';
   await api.softDeleteEvent(event.id, accessToken, deletedBy);
+  correction?.recalcOuts();
 }
 
 // 送信失敗中はバッジをタップすると手動リトライ(自動リトライが尽きた場合のみ表示される)。
@@ -1481,6 +1489,13 @@ async function init() {
   }
 
   populateSelects();
+  correction = createCorrection({
+    state, gameId, accessToken,
+    getEnteredBy: () => els.enteredByInput.value.trim(),
+    onEditAtbat: handleEditAtbat,
+    onChanged: renderAll,
+    els: { modalOverlay: els.modalOverlay, modalMessage: els.modalMessage, modalConfirm: els.modalConfirm, modalCancel: els.modalCancel },
+  });
   renderAll();
 
   // リロードで消えずに残っていた送信待ち・送信失敗中のリクエストを再送する(#9)。

@@ -287,6 +287,12 @@ $$;
 revoke execute on function _apply_atbat_consequences(text, int, text, text, text, live_atbats, bigint[], jsonb, text) from public, anon, authenticated;
 
 
+-- v1.8で p_created_at を追加したため、旧シグネチャを削除してから作り直す(オーバーロードの曖昧さ回避)。
+drop function if exists submit_atbat(
+  text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text,
+  bigint[], bigint[], jsonb, text
+);
+
 create or replace function submit_atbat(
   p_game_id text,
   p_access_token uuid,
@@ -310,7 +316,9 @@ create or replace function submit_atbat(
   p_advanced_runner_moves jsonb default '[]',
   -- 打者走者自身がこの打席で(失策等により)追加で進んだ先の塁('second'/'third'/'home')。
   -- 通常の出塁のみ(そのまま一塁等)ならnullのまま。
-  p_batter_advance_to_base text default null
+  p_batter_advance_to_base text default null,
+  -- 修正モードで過去の打席の間に挿入する場合の記録時刻(前後の行の中間)。通常の入力ではnull(=now())。
+  p_created_at timestamptz default null
 )
 returns live_atbats
 language plpgsql
@@ -334,10 +342,11 @@ begin
 
   insert into live_atbats (
     game_id, client_uuid, inning, half, batter_id, order_no, outs_before,
-    result, ab, hit_type, rbi, scored, detail, pitcher_id, opponent_batter_name, entered_by
+    result, ab, hit_type, rbi, scored, detail, pitcher_id, opponent_batter_name, entered_by, created_at
   ) values (
     p_game_id, p_client_uuid, p_inning, p_half, p_batter_id, p_order_no, p_outs_before,
-    p_result, p_ab, p_hit_type, p_rbi, p_scored, p_detail, p_pitcher_id, p_opponent_batter_name, p_entered_by
+    p_result, p_ab, p_hit_type, p_rbi, p_scored, p_detail, p_pitcher_id, p_opponent_batter_name, p_entered_by,
+    coalesce(p_created_at, now())
   )
   -- client_uuidによるベキ等リトライ: 同じ内容の再送はDO NOTHINGで無害化し、既存行を返す
   on conflict (game_id, client_uuid) do nothing
@@ -369,7 +378,7 @@ $$;
 
 grant execute on function submit_atbat(
   text, uuid, uuid, int, text, text, int, int, text, boolean, text, int, boolean, text, text, text, text,
-  bigint[], bigint[], jsonb, text
+  bigint[], bigint[], jsonb, text, timestamptz
 ) to anon, authenticated;
 
 
@@ -510,6 +519,13 @@ begin
   where id = p_id and deleted_at is null
   returning * into v_row;
 
+  -- この打席と同時に作られた付随イベント(走者の進塁・アウト等)も一緒に取り消す(v1.8)。
+  -- 残すと取消済み打席の走塁死がアウト数に数えられ続けてしまうため。restore_atbatで一緒に戻る。
+  if v_row.id is not null then
+    update live_events set deleted_at = v_row.deleted_at, deleted_by = p_deleted_by
+    where caused_by_atbat_id = p_id and deleted_at is null;
+  end if;
+
   return v_row;
 end;
 $$;
@@ -566,6 +582,9 @@ begin
   where id = v_target_id
   returning * into v_row;
 
+  update live_events set deleted_at = v_row.deleted_at, deleted_by = p_deleted_by
+  where caused_by_atbat_id = v_target_id and deleted_at is null;
+
   return v_row;
 end;
 $$;
@@ -575,6 +594,8 @@ grant execute on function undo_last_atbat(text, uuid, text, uuid) to anon, authe
 
 -- 既存DBに古い10引数版(runner_atbat_id/to_base追加前)が残っている場合に備えて明示的に削除する。
 drop function if exists submit_event(text, uuid, uuid, int, text, text, text, text, text, text);
+
+drop function if exists submit_event(text, uuid, uuid, int, text, text, text, text, text, text, bigint, text);
 
 create or replace function submit_event(
   p_game_id text,
@@ -588,7 +609,8 @@ create or replace function submit_event(
   p_runner_note text,
   p_entered_by text,
   p_runner_atbat_id bigint default null,
-  p_to_base text default null
+  p_to_base text default null,
+  p_created_at timestamptz default null
 )
 returns live_events
 language plpgsql
@@ -607,11 +629,11 @@ begin
 
   insert into live_events (
     game_id, client_uuid, inning, half, type, runner_id, pitcher_id, runner_note, entered_by,
-    runner_atbat_id, to_base
+    runner_atbat_id, to_base, created_at
   )
   values (
     p_game_id, p_client_uuid, p_inning, p_half, p_type, p_runner_id, p_pitcher_id, p_runner_note, p_entered_by,
-    p_runner_atbat_id, p_to_base
+    p_runner_atbat_id, p_to_base, coalesce(p_created_at, now())
   )
   on conflict (game_id, client_uuid) do nothing
   returning * into v_row;
@@ -635,7 +657,7 @@ end;
 $$;
 
 grant execute on function submit_event(
-  text, uuid, uuid, int, text, text, text, text, text, text, bigint, text
+  text, uuid, uuid, int, text, text, text, text, text, text, bigint, text, timestamptz
 ) to anon, authenticated;
 
 
@@ -749,3 +771,121 @@ select cron.schedule(
   '0 * * * *',
   $$select delete_expired_verification_games();$$
 );
+
+
+-- ===== v1.8 修正モード用 =====
+
+-- 取り消した打席・イベントを元に戻す。
+create or replace function restore_atbat(p_id bigint, p_access_token uuid)
+returns live_atbats
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_game_id text;
+  v_row live_atbats;
+  v_deleted_at timestamptz;
+begin
+  select game_id into v_game_id from live_atbats where id = p_id;
+  if v_game_id is null then
+    raise exception 'live_atbats id % not found', p_id;
+  end if;
+  perform _check_access(v_game_id, p_access_token);
+
+  select deleted_at into v_deleted_at from live_atbats where id = p_id;
+
+  update live_atbats set deleted_at = null, deleted_by = null
+  where id = p_id
+  returning * into v_row;
+
+  -- 打席の取消と同時に取り消された付随イベントも戻す。
+  if v_deleted_at is not null then
+    update live_events set deleted_at = null, deleted_by = null
+    where caused_by_atbat_id = p_id and deleted_at = v_deleted_at;
+  end if;
+  return v_row;
+end;
+$$;
+
+grant execute on function restore_atbat(bigint, uuid) to anon, authenticated;
+
+create or replace function restore_event(p_id bigint, p_access_token uuid)
+returns live_events
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_game_id text;
+  v_row live_events;
+begin
+  select game_id into v_game_id from live_events where id = p_id;
+  if v_game_id is null then
+    raise exception 'live_events id % not found', p_id;
+  end if;
+  perform _check_access(v_game_id, p_access_token);
+
+  update live_events set deleted_at = null, deleted_by = null
+  where id = p_id
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+
+grant execute on function restore_event(bigint, uuid) to anon, authenticated;
+
+-- 取消・挿入・復活の後に、アプリ側で計算し直した各打席のアウト数(outs_before)を一括で書き戻す。
+-- p_updates: [{"id": 123, "outs": 1}, ...]。値が変わる行だけ更新する。
+create or replace function set_outs_before(p_game_id text, p_access_token uuid, p_updates jsonb)
+returns int
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_item jsonb;
+  v_count int := 0;
+begin
+  perform _check_access(p_game_id, p_access_token);
+  for v_item in select * from jsonb_array_elements(p_updates)
+  loop
+    update live_atbats set outs_before = (v_item->>'outs')::int
+    where game_id = p_game_id and id = (v_item->>'id')::bigint
+      and outs_before is distinct from (v_item->>'outs')::int;
+    if found then v_count := v_count + 1; end if;
+  end loop;
+  return v_count;
+end;
+$$;
+
+grant execute on function set_outs_before(text, uuid, jsonb) to anon, authenticated;
+
+-- 走者の生還フラグを直接直す。生還を取り消す場合は、その走者の生還イベント(runner_advance to home)も取り消す
+-- (残っていると走者一覧から消えたままになるため)。
+create or replace function set_runner_scored(p_atbat_id bigint, p_access_token uuid, p_scored boolean, p_by text)
+returns live_atbats
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_game_id text;
+  v_row live_atbats;
+begin
+  select game_id into v_game_id from live_atbats where id = p_atbat_id;
+  if v_game_id is null then
+    raise exception 'live_atbats id % not found', p_atbat_id;
+  end if;
+  perform _check_access(v_game_id, p_access_token);
+
+  update live_atbats set scored = p_scored where id = p_atbat_id returning * into v_row;
+  if not p_scored then
+    update live_events set deleted_at = now(), deleted_by = p_by
+    where runner_atbat_id = p_atbat_id and type = 'runner_advance' and to_base = 'home' and deleted_at is null;
+  end if;
+  return v_row;
+end;
+$$;
+
+grant execute on function set_runner_scored(bigint, uuid, boolean, text) to anon, authenticated;

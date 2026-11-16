@@ -79,6 +79,8 @@ export async function submitAtbat(gameId, accessToken, payload) {
     p_out_runner_ids: payload.outRunnerIds || [],
     p_advanced_runner_moves: payload.advancedRunnerMoves || [],
     p_batter_advance_to_base: payload.batterAdvanceToBase || null,
+    // 修正モードでの挿入時のみ送る(通常入力ではキー自体を送らない=サーバー側でnow())。
+    ...(payload.createdAt ? { p_created_at: payload.createdAt } : {}),
   });
   if (error) throw error;
   return data;
@@ -105,6 +107,8 @@ export async function editAtbatFull(id, accessToken, payload) {
     p_out_runner_ids: payload.outRunnerIds || [],
     p_advanced_runner_moves: payload.advancedRunnerMoves || [],
     p_batter_advance_to_base: payload.batterAdvanceToBase || null,
+    // 修正モードでの挿入時のみ送る(通常入力ではキー自体を送らない=サーバー側でnow())。
+    ...(payload.createdAt ? { p_created_at: payload.createdAt } : {}),
   });
   if (error) throw error;
   return data;
@@ -145,6 +149,7 @@ export async function submitEvent(gameId, accessToken, payload) {
     p_entered_by: payload.enteredBy,
     p_runner_atbat_id: payload.runnerAtbatId ?? null,
     p_to_base: payload.toBase ?? null,
+    ...(payload.createdAt ? { p_created_at: payload.createdAt } : {}),
   });
   if (error) throw error;
   return data;
@@ -186,6 +191,36 @@ export async function addGuestPlayer(id, displayName) {
 
 export async function fetchPlayers() {
   const { data, error } = await supabase.from('players').select('*').order('id');
+  if (error) throw error;
+  return data;
+}
+
+// --- 修正モード(v1.8) ---
+export async function restoreAtbat(id, accessToken) {
+  const { data, error } = await supabase.rpc('restore_atbat', { p_id: id, p_access_token: accessToken });
+  if (error) throw error;
+  return data;
+}
+
+export async function restoreEvent(id, accessToken) {
+  const { data, error } = await supabase.rpc('restore_event', { p_id: id, p_access_token: accessToken });
+  if (error) throw error;
+  return data;
+}
+
+// updates: [{id, outs}]
+export async function setOutsBefore(gameId, accessToken, updates) {
+  const { data, error } = await supabase.rpc('set_outs_before', {
+    p_game_id: gameId, p_access_token: accessToken, p_updates: updates,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function setRunnerScored(atbatId, accessToken, scored, by) {
+  const { data, error } = await supabase.rpc('set_runner_scored', {
+    p_atbat_id: atbatId, p_access_token: accessToken, p_scored: scored, p_by: by,
+  });
   if (error) throw error;
   return data;
 }

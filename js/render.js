@@ -14,6 +14,7 @@ const RESULT_LABELS = {
 const EVENT_LABELS = {
   stolen_base: '盗塁', caught_stealing: '盗塁死', runner_out_advancing: '走塁死',
   runner_advance: '進塁', wild_pitch: '暴投', balk: 'ボーク', passed_ball: 'パスボール',
+  runner_removed: '走者を消去',
 };
 
 const BASE_LABELS = { first: '一塁', second: '二塁', third: '三塁', home: '本塁' };
@@ -177,6 +178,22 @@ export function renderPointer(elm, pointer, playersById, score, runners) {
   elm.appendChild(sub);
 }
 
+// 打席・イベント1行分の表示文字列(最近の入力一覧と修正モードで共通)。
+export function atbatLabel(a, playersById) {
+  const batterName = a.batter_id === 'opponent'
+    ? (a.opponent_batter_name || '相手打者')
+    : (playersById.get(a.batter_id)?.display_name || a.batter_id);
+  const detail = a.detail && a.detail !== RESULT_LABELS[a.result] ? `(${a.detail})` : '';
+  return `${a.inning}回${a.half === 'top' ? '表' : '裏'} ${batterName} ${RESULT_LABELS[a.result] || a.result}${detail}${a.scored ? ' ・生還' : ''}`;
+}
+
+export function eventLabel(e, playersById) {
+  const runnerName = e.runner_id === 'opponent' ? '相手走者'
+    : (e.runner_id ? (playersById.get(e.runner_id)?.display_name || e.runner_id) : '');
+  const toBaseSuffix = e.type === 'runner_advance' && e.to_base ? `(${BASE_LABELS[e.to_base] || e.to_base}へ)` : '';
+  return `${e.inning}回${e.half === 'top' ? '表' : '裏'} ${EVENT_LABELS[e.type] || e.type}${runnerName ? ' ' + runnerName : ''}${toBaseSuffix}${e.runner_note ? `(${e.runner_note})` : ''}`;
+}
+
 export function renderRecentList(elm, atbats, events, playersById, handlers) {
   clear(elm);
   const alive = aliveAtbats(atbats).slice(-10).reverse();
@@ -187,10 +204,7 @@ export function renderRecentList(elm, atbats, events, playersById, handlers) {
     row.className = 'recent-row';
 
     const label = document.createElement('span');
-    const batterName = a.batter_id === 'opponent'
-      ? (a.opponent_batter_name || '相手打者')
-      : (playersById.get(a.batter_id)?.display_name || a.batter_id);
-    label.textContent = `${a.inning}回${a.half === 'top' ? '表' : '裏'} ${batterName} ${RESULT_LABELS[a.result] || a.result}`;
+    label.textContent = atbatLabel(a, playersById);
     row.appendChild(label);
 
     const editBtn = document.createElement('button');
@@ -212,9 +226,7 @@ export function renderRecentList(elm, atbats, events, playersById, handlers) {
     const row = document.createElement('div');
     row.className = 'recent-row recent-row-event';
     const label = document.createElement('span');
-    const runnerName = e.runner_id ? (playersById.get(e.runner_id)?.display_name || e.runner_id) : '';
-    const toBaseSuffix = e.type === 'runner_advance' && e.to_base ? `(${BASE_LABELS[e.to_base] || e.to_base}へ)` : '';
-    label.textContent = `${e.inning}回${e.half === 'top' ? '表' : '裏'} ${EVENT_LABELS[e.type] || e.type}${runnerName ? ' ' + runnerName : ''}${toBaseSuffix}${e.runner_note ? `(${e.runner_note})` : ''}`;
+    label.textContent = eventLabel(e, playersById);
     row.appendChild(label);
     const delBtn = document.createElement('button');
     delBtn.textContent = '取消';

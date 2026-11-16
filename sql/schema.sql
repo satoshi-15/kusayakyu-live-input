@@ -80,7 +80,7 @@ create table if not exists live_events (
   type text not null check (
     type in (
       'stolen_base', 'caught_stealing', 'runner_out_advancing', 'runner_advance',
-      'wild_pitch', 'balk', 'passed_ball'
+      'wild_pitch', 'balk', 'passed_ball', 'runner_removed'
     )
   ),
   -- 表示・エクスポート用(自チームは選手id、相手チームはopponent_batter_nameを入れる)。
@@ -89,7 +89,9 @@ create table if not exists live_events (
   -- (相手選手には安定した選手idが無いため。js/derive.jsのderiveRunnersOnBase参照)。
   runner_atbat_id bigint references live_atbats(id),
   -- type='runner_advance'の進塁先。'home'は打席を介さない生還(暴投・ボーク・パスボール等)を表す。
-  to_base text check (to_base is null or to_base in ('second', 'third', 'home')),
+  -- 'first'は修正モードで走者を一塁へ付け直す場合に使う。type='runner_removed'(v1.8)は
+  -- 記録ミスの走者を塁上から消す(アウトには数えない)。
+  to_base text check (to_base is null or to_base in ('first', 'second', 'third', 'home')),
   pitcher_id text,
   runner_note text,
   entered_by text,

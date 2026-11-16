@@ -127,12 +127,25 @@
   <div id="pending-badge" class="pending-badge"></div>
   <button type="button" id="undo-btn" class="btn-secondary hidden">直前の入力を取り消す(5秒以内)</button>
 
+  <button type="button" id="correction-open-btn" class="btn-secondary" style="margin-top:16px;">修正モード(途中に追加・取消を戻す・走者を直す)</button>
+
   <h2>最近の入力</h2>
   <div id="recent-list"></div>
 
   <button type="button" id="close-game-btn" class="btn-danger" style="margin-top:24px;">試合終了</button>
-  <p class="app-version">v1.7</p>
+  <p class="app-version">v1.8</p>
 </main>
+
+<section id="correction-panel" class="correction-panel hidden">
+  <div class="correction-header">
+    <strong>修正モード</strong>
+    <button type="button" id="correction-close-btn" class="btn-small">閉じる</button>
+  </div>
+  <p class="field-hint">記録を時系列で表示しています。「＋後に追加」で途中に記録を差し込めます。取消済みの記録は「戻す」で復活できます。アウト数は操作のたびに自動で数え直します。</p>
+  <button type="button" id="correction-runners-btn" class="btn-secondary">走者・得点を直す</button>
+  <div id="correction-status" class="field-hint"></div>
+  <div id="correction-timeline"></div>
+</section>
 
 <div id="modal-overlay" class="modal-overlay hidden">
   <div class="modal-box">
